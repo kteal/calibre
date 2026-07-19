@@ -1,0 +1,21 @@
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+  "Apache-2.0",
+  "MIT",
+  "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-git = "deny"
+unknown-registry = "deny"

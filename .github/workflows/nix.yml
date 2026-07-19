@@ -1,0 +1,23 @@
+name: Nix
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  flake:
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      # cachix/install-nix-action v31.11.0
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342
+      - name: Build package artifact
+        run: nix build --print-build-logs
+      - name: Check flake
+        run: nix flake check --print-build-logs
