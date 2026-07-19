@@ -3,6 +3,7 @@ use crate::{BookId, Error, Format, Result};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use std::ffi::OsStr;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -59,6 +60,24 @@ impl Formats {
         fs::read(&path).map_err(|source| crate::error::io_error("read format", path, source))
     }
 
+    /// Streams a format to a writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when resolution, file reading, or writer output fails.
+    pub fn write_to(
+        &self,
+        book: BookId,
+        format: impl AsRef<OsStr>,
+        writer: &mut impl Write,
+    ) -> Result<u64> {
+        let path = self.path(book, format)?;
+        let mut source = fs::File::open(&path)
+            .map_err(|error| crate::error::io_error("open format", &path, error))?;
+        std::io::copy(&mut source, writer)
+            .map_err(|error| crate::error::io_error("stream format", path, error))
+    }
+
     /// Copies a format to a caller-selected destination.
     ///
     /// # Errors
@@ -71,7 +90,12 @@ impl Formats {
         destination: impl AsRef<Path>,
     ) -> Result<u64> {
         let source = self.path(book, format)?;
-        fs::copy(&source, destination.as_ref()).map_err(|error| {
+        let mut source_file = fs::File::open(&source)
+            .map_err(|error| crate::error::io_error("open format", &source, error))?;
+        let mut destination_file = fs::File::create(destination.as_ref()).map_err(|error| {
+            crate::error::io_error("create format destination", destination.as_ref(), error)
+        })?;
+        std::io::copy(&mut source_file, &mut destination_file).map_err(|error| {
             crate::error::io_error("copy format out of library", destination.as_ref(), error)
         })
     }
@@ -83,7 +107,22 @@ impl Formats {
     /// Returns an error for read-only mode, active FTS state, invalid input,
     /// an existing format, or database/filesystem failure.
     pub fn add(&self, book: BookId, source: impl AsRef<Path>) -> Result<Format> {
-        self.put(book, source.as_ref(), false)
+        self.put_path(book, source.as_ref(), false)
+    }
+
+    /// Adds a new format by streaming from a reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for read-only mode, active FTS state, an invalid or
+    /// existing format, reader failure, or database/filesystem failure.
+    pub fn add_from_reader(
+        &self,
+        book: BookId,
+        format: impl AsRef<OsStr>,
+        reader: &mut impl Read,
+    ) -> Result<Format> {
+        self.put_reader(book, format.as_ref(), reader, false)
     }
 
     /// Adds or atomically replaces a format.
@@ -93,7 +132,22 @@ impl Formats {
     /// Returns an error for read-only mode, active FTS state, invalid input,
     /// or database/filesystem failure.
     pub fn replace(&self, book: BookId, source: impl AsRef<Path>) -> Result<Format> {
-        self.put(book, source.as_ref(), true)
+        self.put_path(book, source.as_ref(), true)
+    }
+
+    /// Adds or atomically replaces a format by streaming from a reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for read-only mode, active FTS state, invalid input,
+    /// reader failure, or database/filesystem failure.
+    pub fn replace_from_reader(
+        &self,
+        book: BookId,
+        format: impl AsRef<OsStr>,
+        reader: &mut impl Read,
+    ) -> Result<Format> {
+        self.put_reader(book, format.as_ref(), reader, true)
     }
 
     /// Removes one format while keeping the logical book.
@@ -151,21 +205,35 @@ impl Formats {
             }
             Err(error) => {
                 if let Some(replacement) = replacement.take() {
-                    let _ = replacement.rollback();
+                    replacement.rollback()?;
                 }
                 Err(error)
             }
         }
     }
 
-    fn put(&self, book: BookId, source: &Path, replace: bool) -> Result<Format> {
+    fn put_path(&self, book: BookId, source: &Path, replace: bool) -> Result<Format> {
+        let format = crate::paths::format_from_path(source)?;
+        let mut reader = fs::File::open(source)
+            .map_err(|error| crate::error::io_error("open source format", source, error))?;
+        self.put_reader(book, OsStr::new(&format), &mut reader, replace)
+    }
+
+    #[allow(clippy::too_many_lines)] // The transaction and file compensation form one boundary.
+    fn put_reader(
+        &self,
+        book: BookId,
+        format: &OsStr,
+        reader: &mut impl Read,
+        replace: bool,
+    ) -> Result<Format> {
         if !self.inner.capabilities.write_formats {
             return Err(Error::UnsupportedOperation {
                 operation: "write format",
                 reason: "read-write mode and inactive full-text-search state are required".into(),
             });
         }
-        let format = crate::paths::format_from_path(source)?;
+        let format = crate::paths::format_name(format)?;
         let _guard = self.inner.lock_writer("write format")?;
         let book_value = crate::Library {
             inner: Arc::clone(&self.inner),
@@ -218,10 +286,6 @@ impl Formats {
                 })
         };
         let destination = directory.join(format!("{stem}.{}", format.to_ascii_lowercase()));
-        let source_size = fs::metadata(source)
-            .map_err(|error| crate::error::io_error("inspect source format", source, error))?
-            .len();
-        let source_size = crate::books::i64_size(source_size)?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| {
@@ -231,7 +295,15 @@ impl Formats {
                     error,
                 )
             })?;
-        let replacement = AssetReplacement::install(source, &destination)?;
+        let (replacement, source_size) =
+            AssetReplacement::install_from_reader(reader, &destination)?;
+        let source_size = match crate::books::i64_size(source_size) {
+            Ok(size) => size,
+            Err(error) => {
+                replacement.rollback()?;
+                return Err(error);
+            }
+        };
         let result = transaction
             .execute(
                 "INSERT INTO data(book, format, uncompressed_size, name) VALUES (?1, ?2, ?3, ?4) \
@@ -245,7 +317,7 @@ impl Formats {
         match result {
             Ok(()) => replacement.commit()?,
             Err(error) => {
-                let _ = replacement.rollback();
+                replacement.rollback()?;
                 return Err(error);
             }
         }
@@ -278,7 +350,10 @@ pub(crate) struct AssetReplacement {
 }
 
 impl AssetReplacement {
-    pub(crate) fn install(source: &Path, destination: &Path) -> Result<Self> {
+    pub(crate) fn install_from_reader(
+        source: &mut impl Read,
+        destination: &Path,
+    ) -> Result<(Self, u64)> {
         let backup = if destination.exists() {
             let backup =
                 destination.with_file_name(format!(".calibre-rs-backup-{}", uuid::Uuid::new_v4()));
@@ -289,12 +364,15 @@ impl AssetReplacement {
         } else {
             None
         };
-        match crate::books::copy_new_asset(source, destination) {
-            Ok(_) => Ok(Self {
-                destination: destination.to_path_buf(),
-                backup,
-                installed: true,
-            }),
+        match copy_reader_to_new_asset(source, destination) {
+            Ok(size) => Ok((
+                Self {
+                    destination: destination.to_path_buf(),
+                    backup,
+                    installed: true,
+                },
+                size,
+            )),
             Err(error) => {
                 if let Some(backup) = &backup {
                     let _ = fs::rename(backup, destination);
@@ -337,4 +415,29 @@ impl AssetReplacement {
         }
         Ok(())
     }
+}
+
+fn copy_reader_to_new_asset(source: &mut impl Read, destination: &Path) -> Result<u64> {
+    if destination.exists() {
+        return Err(Error::InvalidInput {
+            field: "asset destination",
+            reason: format!("{} already exists", destination.display()),
+        });
+    }
+    let parent = destination.parent().ok_or_else(|| Error::InvalidInput {
+        field: "asset destination",
+        reason: "destination has no parent directory".into(),
+    })?;
+    let mut staged = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| crate::error::io_error("stage asset", parent, error))?;
+    let size = std::io::copy(source, staged.as_file_mut())
+        .map_err(|error| crate::error::io_error("copy staged asset", destination, error))?;
+    staged
+        .as_file()
+        .sync_all()
+        .map_err(|error| crate::error::io_error("sync staged asset", destination, error))?;
+    staged.persist(destination).map_err(|error| {
+        crate::error::io_error("install staged asset", destination, error.error)
+    })?;
+    Ok(size)
 }

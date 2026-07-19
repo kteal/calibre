@@ -185,6 +185,14 @@ pub enum BookSort {
     LastModified,
     /// Sort by numeric ID.
     Id,
+    /// Sort by publication date.
+    PublicationDate,
+    /// Sort by series name.
+    Series,
+    /// Sort by publisher name.
+    Publisher,
+    /// Sort by Calibre's stored rating.
+    Rating,
 }
 
 /// Sort direction.
@@ -215,17 +223,115 @@ impl Default for PageRequest {
     }
 }
 
-/// Filtering, sorting, and pagination for book listing.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct BookQuery {
-    /// Case-insensitive SQL `LIKE` title fragment. `%` and `_` are escaped.
-    pub title_contains: Option<String>,
-    /// Sort key.
-    pub sort: BookSort,
-    /// Direction.
+/// One filter applied to a book query.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum BookFilter {
+    /// Match a case-insensitive title fragment.
+    TitleContains(String),
+    /// Match a case-insensitive author-name fragment.
+    AuthorContains(String),
+    /// Match an exact tag name.
+    Tag(String),
+    /// Match an exact series name.
+    Series(String),
+    /// Match an exact publisher name.
+    Publisher(String),
+    /// Match an exact stored language code.
+    Language(String),
+    /// Match an exact identifier value and, when supplied, its kind.
+    Identifier {
+        /// Optional identifier kind such as `isbn`.
+        kind: Option<String>,
+        /// Identifier value.
+        value: String,
+    },
+    /// Match an available logical format such as `EPUB`.
+    Format(String),
+    /// Match ratings within an inclusive range.
+    RatingRange {
+        /// Inclusive lower bound.
+        minimum: Rating,
+        /// Inclusive upper bound.
+        maximum: Rating,
+    },
+    /// Match the stored cover-presence flag.
+    HasCover(bool),
+    /// Restrict results to these book IDs.
+    Ids(Vec<BookId>),
+}
+
+/// One ordered sort term.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BookOrder {
+    /// Sort field.
+    pub field: BookSort,
+    /// Sort direction.
     pub direction: SortDirection,
+}
+
+impl BookOrder {
+    /// Creates a sort term.
+    #[must_use]
+    pub const fn new(field: BookSort, direction: SortDirection) -> Self {
+        Self { field, direction }
+    }
+
+    /// Creates an ascending sort term.
+    #[must_use]
+    pub const fn ascending(field: BookSort) -> Self {
+        Self::new(field, SortDirection::Ascending)
+    }
+
+    /// Creates a descending sort term.
+    #[must_use]
+    pub const fn descending(field: BookSort) -> Self {
+        Self::new(field, SortDirection::Descending)
+    }
+}
+
+/// Filtering, multi-column sorting, and pagination for book listing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BookQuery {
+    /// Filters combined with logical AND.
+    pub filters: Vec<BookFilter>,
+    /// Sort terms from most significant to least significant.
+    pub order: Vec<BookOrder>,
     /// Page request.
     pub page: PageRequest,
+}
+
+impl BookQuery {
+    /// Adds a filter.
+    #[must_use]
+    pub fn filter(mut self, filter: BookFilter) -> Self {
+        self.filters.push(filter);
+        self
+    }
+
+    /// Replaces the sort terms.
+    #[must_use]
+    pub fn order_by(mut self, order: impl IntoIterator<Item = BookOrder>) -> Self {
+        self.order = order.into_iter().collect();
+        self
+    }
+
+    /// Replaces the page request.
+    #[must_use]
+    pub const fn page(mut self, page: PageRequest) -> Self {
+        self.page = page;
+        self
+    }
+}
+
+impl Default for BookQuery {
+    fn default() -> Self {
+        Self {
+            filters: Vec::new(),
+            order: vec![BookOrder::ascending(BookSort::Title)],
+            page: PageRequest::default(),
+        }
+    }
 }
 
 /// One page of books.

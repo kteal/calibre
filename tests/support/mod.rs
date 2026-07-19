@@ -148,6 +148,13 @@ fn create_schema(root: &Path, version: u32) {
             );
             CREATE TABLE custom_columns (
                 id INTEGER PRIMARY KEY,
+                label TEXT NOT NULL,
+                name TEXT NOT NULL,
+                datatype TEXT NOT NULL,
+                is_multiple INTEGER NOT NULL DEFAULT 0,
+                editable INTEGER NOT NULL DEFAULT 1,
+                display TEXT NOT NULL DEFAULT '{{}}',
+                normalized INTEGER NOT NULL DEFAULT 0,
                 mark_for_delete INTEGER NOT NULL DEFAULT 0
             );
             "

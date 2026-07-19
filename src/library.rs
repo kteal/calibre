@@ -1,4 +1,6 @@
-use crate::{Books, Covers, Error, Formats, Result};
+use crate::{
+    Auditor, Books, Covers, CustomColumns, Error, Formats, RecoveryEntry, RecoveryReport, Result,
+};
 use rusqlite::{Connection, OpenFlags, functions::FunctionFlags};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -89,8 +91,12 @@ pub struct Capabilities {
     pub permanent_delete: bool,
     /// Calibre-compatible trash is available.
     pub calibre_trash: bool,
-    /// Custom-column operations are available.
-    pub custom_columns: bool,
+    /// Custom-column definitions and stored values can be read.
+    pub read_custom_columns: bool,
+    /// Custom-column definitions and stored values can be written.
+    pub write_custom_columns: bool,
+    /// Durable recovery records are waiting to be resolved.
+    pub recovery_required: bool,
 }
 
 #[derive(Debug)]
@@ -167,9 +173,10 @@ impl Library {
         }
         validate_schema(&connection, &database)?;
 
-        let writable = options.mode == OpenMode::ReadWrite;
         let custom_columns = has_active_custom_columns(&connection, &database)?;
         let fts_state = root.join("full-text-search.db").exists();
+        let recovery_required = crate::recovery::has_pending(&root)?;
+        let writable = options.mode == OpenMode::ReadWrite && !recovery_required;
         drop(connection);
 
         Ok(Self {
@@ -190,7 +197,9 @@ impl Library {
                     write_covers: writable,
                     permanent_delete: writable && !fts_state && !custom_columns,
                     calibre_trash: false,
-                    custom_columns: false,
+                    read_custom_columns: true,
+                    write_custom_columns: false,
+                    recovery_required,
                 },
                 write_lock: Mutex::new(()),
             }),
@@ -238,6 +247,42 @@ impl Library {
     pub fn covers(&self) -> Covers {
         Covers::new(Arc::clone(&self.inner))
     }
+
+    /// Returns read-only consistency checks.
+    #[must_use]
+    pub fn auditor(&self) -> Auditor {
+        Auditor::new(Arc::clone(&self.inner))
+    }
+
+    /// Returns read-only custom-column operations.
+    #[must_use]
+    pub fn custom_columns(&self) -> CustomColumns {
+        CustomColumns::new(Arc::clone(&self.inner))
+    }
+
+    /// Lists durable records left by interrupted book operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a journal cannot be read or validated.
+    pub fn pending_recovery(&self) -> Result<Vec<RecoveryEntry>> {
+        crate::recovery::pending(&self.inner.root)
+    }
+
+    /// Resolves interrupted book additions and permanent removals.
+    ///
+    /// The database row determines whether a staged directory is kept,
+    /// restored, or removed. Reopen the library after recovery to refresh its
+    /// capability report.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error in read-only mode or when journal, database, or
+    /// filesystem state cannot be safely reconciled.
+    pub fn recover_pending(&self) -> Result<RecoveryReport> {
+        let _guard = self.inner.lock_writer("recover pending writes")?;
+        crate::recovery::recover(&self.inner)
+    }
 }
 
 impl LibraryInner {
@@ -259,6 +304,7 @@ impl LibraryInner {
                 supported: "version 27",
             });
         }
+        crate::recovery::ensure_clear(&self.root, operation)?;
         open_connection(&self.database, OpenMode::ReadWrite, self.busy_timeout)
     }
 

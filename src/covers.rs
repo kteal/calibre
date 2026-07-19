@@ -3,6 +3,7 @@ use crate::library::{LibraryInner, database_error};
 use crate::{BookId, Error, Result};
 use rusqlite::TransactionBehavior;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -45,6 +46,24 @@ impl Covers {
             .map_err(|error| crate::error::io_error("read cover", path, error))
     }
 
+    /// Streams a cover to a writer.
+    ///
+    /// Returns `Ok(None)` when the database records no cover.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when path resolution, file reading, or writer output fails.
+    pub fn write_to(&self, book: BookId, writer: &mut impl Write) -> Result<Option<u64>> {
+        let Some(path) = self.path(book)? else {
+            return Ok(None);
+        };
+        let mut source = fs::File::open(&path)
+            .map_err(|error| crate::error::io_error("open cover", &path, error))?;
+        std::io::copy(&mut source, writer)
+            .map(Some)
+            .map_err(|error| crate::error::io_error("stream cover", path, error))
+    }
+
     /// Adds or atomically replaces `cover.jpg`.
     ///
     /// # Errors
@@ -52,6 +71,18 @@ impl Covers {
     /// Returns an error for read-only mode, a missing book directory, or a
     /// database/filesystem failure.
     pub fn replace(&self, book: BookId, source: impl AsRef<Path>) -> Result<PathBuf> {
+        let mut source_file = fs::File::open(source.as_ref())
+            .map_err(|error| crate::error::io_error("open source cover", source.as_ref(), error))?;
+        self.replace_from_reader(book, &mut source_file)
+    }
+
+    /// Adds or atomically replaces `cover.jpg` by streaming from a reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for read-only mode, a missing book directory, reader
+    /// failure, or a database/filesystem failure.
+    pub fn replace_from_reader(&self, book: BookId, reader: &mut impl Read) -> Result<PathBuf> {
         let _guard = self.inner.lock_writer("replace cover")?;
         let book_value = crate::Library {
             inner: Arc::clone(&self.inner),
@@ -76,7 +107,7 @@ impl Covers {
                     error,
                 )
             })?;
-        let replacement = AssetReplacement::install(source.as_ref(), &destination)?;
+        let (replacement, _) = AssetReplacement::install_from_reader(reader, &destination)?;
         let result = transaction
             .execute("UPDATE books SET has_cover = 1 WHERE id = ?1", [book.get()])
             .and_then(|changed| {
@@ -95,7 +126,7 @@ impl Covers {
                 Ok(destination)
             }
             Err(error) => {
-                let _ = replacement.rollback();
+                replacement.rollback()?;
                 Err(error)
             }
         }
@@ -148,7 +179,7 @@ impl Covers {
             }
             Err(error) => {
                 if let Some(replacement) = replacement.take() {
-                    let _ = replacement.rollback();
+                    replacement.rollback()?;
                 }
                 Err(error)
             }

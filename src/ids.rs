@@ -34,3 +34,7 @@ id_type!(
     FormatId,
     "A stable numeric format-row ID within one library."
 );
+id_type!(
+    CustomColumnId,
+    "A stable numeric custom-column ID within one library."
+);

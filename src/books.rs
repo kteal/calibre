@@ -1,11 +1,14 @@
 use crate::library::{LibraryInner, database_error};
 use crate::model::{
-    Book, BookPage, BookQuery, BookSort, DeletionMode, NewBook, SortDirection, UpdateBook,
+    Book, BookFilter, BookOrder, BookPage, BookQuery, BookSort, DeletionMode, NewBook,
+    SortDirection, UpdateBook,
 };
 use crate::{BookId, Error, Result};
-use rusqlite::{TransactionBehavior, params};
+use rusqlite::types::Value;
+use rusqlite::{TransactionBehavior, params, params_from_iter};
+use std::ffi::OsStr;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Operations on book records and core metadata.
@@ -28,65 +31,35 @@ impl Books {
     #[allow(clippy::needless_pass_by_value)] // Query values are cheap request objects.
     pub fn query(&self, query: BookQuery) -> Result<BookPage> {
         let connection = self.inner.read_connection()?;
-        let pattern = query.title_contains.as_deref().map(escape_like);
-        let total: i64 = if let Some(pattern) = &pattern {
-            connection
-                .query_row(
-                    "SELECT count(*) FROM books WHERE title LIKE ?1 ESCAPE '\\' COLLATE NOCASE",
-                    [format!("%{pattern}%")],
-                    |row| row.get(0),
-                )
-                .map_err(|error| database_error("count books", &self.inner.database, error))?
-        } else {
-            connection
-                .query_row("SELECT count(*) FROM books", [], |row| row.get(0))
-                .map_err(|error| database_error("count books", &self.inner.database, error))?
-        };
-        let sort = match query.sort {
-            BookSort::Title => "sort COLLATE NOCASE",
-            BookSort::Author => "author_sort COLLATE NOCASE",
-            BookSort::Timestamp => "timestamp",
-            BookSort::LastModified => "last_modified",
-            BookSort::Id => "id",
-        };
-        let direction = match query.direction {
-            SortDirection::Ascending => "ASC",
-            SortDirection::Descending => "DESC",
-        };
-        let sql = if pattern.is_some() {
-            format!(
-                "SELECT id FROM books WHERE title LIKE ?1 ESCAPE '\\' COLLATE NOCASE \
-                 ORDER BY {sort} {direction}, id {direction} LIMIT ?2 OFFSET ?3"
-            )
-        } else {
-            format!(
-                "SELECT id FROM books ORDER BY {sort} {direction}, id {direction} \
-                 LIMIT ?1 OFFSET ?2"
-            )
-        };
+        let (where_sql, values) = query_predicate(&query.filters)?;
+        let order_sql = query_order(&query.order);
+        let count_sql = format!("SELECT count(*) FROM books{where_sql}");
+        let total: i64 = connection
+            .query_row(&count_sql, params_from_iter(values.iter()), |row| {
+                row.get(0)
+            })
+            .map_err(|error| database_error("count books", &self.inner.database, error))?;
+        let sql =
+            format!("SELECT books.id FROM books{where_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?");
         let limit = i64::from(query.page.limit);
         let offset = i64::try_from(query.page.offset).map_err(|_| Error::InvalidInput {
             field: "page offset",
             reason: "offset exceeds SQLite's signed integer range".into(),
         })?;
+        let mut page_values = values;
+        page_values.push(Value::Integer(limit));
+        page_values.push(Value::Integer(offset));
         let ids = {
             let mut statement = connection.prepare(&sql).map_err(|error| {
                 database_error("prepare book query", &self.inner.database, error)
             })?;
-            if let Some(pattern) = pattern {
-                statement
-                    .query_map(params![format!("%{pattern}%"), limit, offset], |row| {
-                        row.get::<_, i64>(0)
-                    })
-                    .map_err(|error| database_error("query books", &self.inner.database, error))?
-                    .collect::<std::result::Result<Vec<_>, _>>()
-            } else {
-                statement
-                    .query_map(params![limit, offset], |row| row.get::<_, i64>(0))
-                    .map_err(|error| database_error("query books", &self.inner.database, error))?
-                    .collect::<std::result::Result<Vec<_>, _>>()
-            }
-            .map_err(|error| database_error("query books", &self.inner.database, error))?
+            statement
+                .query_map(params_from_iter(page_values.iter()), |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(|error| database_error("query books", &self.inner.database, error))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|error| database_error("query books", &self.inner.database, error))?
         };
         let items = ids
             .into_iter()
@@ -166,6 +139,8 @@ impl Books {
                 reason: format!("destination already exists: {}", directory.display()),
             });
         }
+        let journal =
+            crate::recovery::RecoveryJournal::begin_book_add(&self.inner.root, id, &relative_path)?;
 
         let result = (|| -> Result<()> {
             let parent = directory.parent().ok_or_else(|| Error::PathEscape {
@@ -287,11 +262,15 @@ impl Books {
 
         if let Err(error) = result {
             if directory.exists() {
-                let _ = fs::remove_dir_all(&directory);
+                fs::remove_dir_all(&directory).map_err(|source| {
+                    crate::error::io_error("clean up failed book add", &directory, source)
+                })?;
             }
             remove_empty_parent(&directory, &self.inner.root);
+            journal.complete()?;
             return Err(error);
         }
+        journal.complete()?;
         self.get(id)
     }
 
@@ -554,18 +533,23 @@ impl Books {
             });
         }
         let _guard = self.inner.lock_writer("permanently delete book")?;
+        crate::recovery::ensure_clear(&self.inner.root, "permanently delete book")?;
         let existing = self.get(id)?;
         let directory = crate::paths::resolve(&self.inner.root, &existing.relative_path)?;
-        let staged = self
-            .inner
-            .root
-            .join(format!(".calibre-rs-delete-{}", uuid::Uuid::new_v4()));
+        let staged_relative = PathBuf::from(format!(".calibre-rs-delete-{}", uuid::Uuid::new_v4()));
+        let staged = crate::paths::resolve(&self.inner.root, &staged_relative)?;
         let mut connection = self.inner.write_connection("permanently delete book")?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| {
                 database_error("begin book-delete transaction", &self.inner.database, error)
             })?;
+        let journal = crate::recovery::RecoveryJournal::begin_book_removal(
+            &self.inner.root,
+            id,
+            &existing.relative_path,
+            &staged_relative,
+        )?;
         let staged_directory = if directory.exists() {
             fs::rename(&directory, &staged).map_err(|source| {
                 crate::error::io_error("stage book deletion", &directory, source)
@@ -587,8 +571,11 @@ impl Books {
             .map_err(|error| database_error("delete book", &self.inner.database, error));
         if let Err(error) = result {
             if staged_directory {
-                let _ = fs::rename(&staged, &directory);
+                fs::rename(&staged, &directory).map_err(|source| {
+                    crate::error::io_error("restore failed book deletion", &staged, source)
+                })?;
             }
+            journal.complete()?;
             return Err(error);
         }
         if staged_directory {
@@ -596,8 +583,178 @@ impl Books {
                 .map_err(|source| crate::error::io_error("remove staged book", &staged, source))?;
         }
         remove_empty_parent(&directory, &self.inner.root);
+        journal.complete()?;
         Ok(())
     }
+}
+
+#[allow(clippy::too_many_lines)] // Each public filter maps to one static SQL predicate.
+fn query_predicate(filters: &[BookFilter]) -> Result<(String, Vec<Value>)> {
+    let mut clauses = Vec::new();
+    let mut values = Vec::new();
+    for filter in filters {
+        match filter {
+            BookFilter::TitleContains(value) => {
+                clauses.push("books.title LIKE ? ESCAPE '\\' COLLATE NOCASE".to_owned());
+                values.push(Value::Text(format!("%{}%", escape_like(value))));
+            }
+            BookFilter::AuthorContains(value) => {
+                clauses.push(
+                    "EXISTS(SELECT 1 FROM books_authors_link AS qal \
+                     JOIN authors AS qa ON qa.id = qal.author \
+                     WHERE qal.book = books.id \
+                     AND qa.name LIKE ? ESCAPE '\\' COLLATE NOCASE)"
+                        .to_owned(),
+                );
+                values.push(Value::Text(format!("%{}%", escape_like(value))));
+            }
+            BookFilter::Tag(value) => {
+                clauses.push(
+                    "EXISTS(SELECT 1 FROM books_tags_link AS qtl \
+                     JOIN tags AS qt ON qt.id = qtl.tag \
+                     WHERE qtl.book = books.id AND qt.name = ? COLLATE NOCASE)"
+                        .to_owned(),
+                );
+                values.push(Value::Text(value.clone()));
+            }
+            BookFilter::Series(value) => {
+                clauses.push(
+                    "EXISTS(SELECT 1 FROM books_series_link AS qsl \
+                     JOIN series AS qs ON qs.id = qsl.series \
+                     WHERE qsl.book = books.id AND qs.name = ? COLLATE NOCASE)"
+                        .to_owned(),
+                );
+                values.push(Value::Text(value.clone()));
+            }
+            BookFilter::Publisher(value) => {
+                clauses.push(
+                    "EXISTS(SELECT 1 FROM books_publishers_link AS qpl \
+                     JOIN publishers AS qp ON qp.id = qpl.publisher \
+                     WHERE qpl.book = books.id AND qp.name = ? COLLATE NOCASE)"
+                        .to_owned(),
+                );
+                values.push(Value::Text(value.clone()));
+            }
+            BookFilter::Language(value) => {
+                clauses.push(
+                    "EXISTS(SELECT 1 FROM books_languages_link AS qll \
+                     JOIN languages AS ql ON ql.id = qll.lang_code \
+                     WHERE qll.book = books.id AND ql.lang_code = ? COLLATE NOCASE)"
+                        .to_owned(),
+                );
+                values.push(Value::Text(value.clone()));
+            }
+            BookFilter::Identifier { kind, value } => {
+                if let Some(kind) = kind {
+                    clauses.push(
+                        "EXISTS(SELECT 1 FROM identifiers AS qi \
+                         WHERE qi.book = books.id AND qi.type = ? COLLATE NOCASE \
+                         AND qi.val = ? COLLATE NOCASE)"
+                            .to_owned(),
+                    );
+                    values.push(Value::Text(kind.clone()));
+                } else {
+                    clauses.push(
+                        "EXISTS(SELECT 1 FROM identifiers AS qi \
+                         WHERE qi.book = books.id AND qi.val = ? COLLATE NOCASE)"
+                            .to_owned(),
+                    );
+                }
+                values.push(Value::Text(value.clone()));
+            }
+            BookFilter::Format(format) => {
+                let normalized = crate::paths::format_name(OsStr::new(format))?;
+                clauses.push(
+                    "EXISTS(SELECT 1 FROM data AS qd \
+                     WHERE qd.book = books.id AND qd.format = ? COLLATE NOCASE)"
+                        .to_owned(),
+                );
+                values.push(Value::Text(normalized));
+            }
+            BookFilter::RatingRange { minimum, maximum } => {
+                if minimum.get() > maximum.get() {
+                    return Err(Error::InvalidInput {
+                        field: "rating range",
+                        reason: "minimum exceeds maximum".into(),
+                    });
+                }
+                clauses.push(
+                    "EXISTS(SELECT 1 FROM books_ratings_link AS qrl \
+                     JOIN ratings AS qr ON qr.id = qrl.rating \
+                     WHERE qrl.book = books.id AND qr.rating BETWEEN ? AND ?)"
+                        .to_owned(),
+                );
+                values.push(Value::Integer(i64::from(minimum.get())));
+                values.push(Value::Integer(i64::from(maximum.get())));
+            }
+            BookFilter::HasCover(has_cover) => {
+                clauses.push("books.has_cover = ?".to_owned());
+                values.push(Value::Integer(i64::from(*has_cover)));
+            }
+            BookFilter::Ids(ids) => {
+                if ids.is_empty() {
+                    clauses.push("0".to_owned());
+                } else {
+                    clauses.push(format!(
+                        "books.id IN ({})",
+                        std::iter::repeat_n("?", ids.len())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                    values.extend(ids.iter().map(|id| Value::Integer(id.get())));
+                }
+            }
+        }
+    }
+    let sql = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", clauses.join(" AND "))
+    };
+    Ok((sql, values))
+}
+
+fn query_order(order: &[BookOrder]) -> String {
+    let mut terms = order
+        .iter()
+        .map(|term| {
+            let expression = match term.field {
+                BookSort::Title => "books.sort COLLATE NOCASE",
+                BookSort::Author => "books.author_sort COLLATE NOCASE",
+                BookSort::Timestamp => "books.timestamp",
+                BookSort::LastModified => "books.last_modified",
+                BookSort::Id => "books.id",
+                BookSort::PublicationDate => "books.pubdate",
+                BookSort::Series => {
+                    "(SELECT qs.name FROM books_series_link AS qsl \
+                     JOIN series AS qs ON qs.id = qsl.series \
+                     WHERE qsl.book = books.id LIMIT 1) COLLATE NOCASE"
+                }
+                BookSort::Publisher => {
+                    "(SELECT qp.name FROM books_publishers_link AS qpl \
+                     JOIN publishers AS qp ON qp.id = qpl.publisher \
+                     WHERE qpl.book = books.id LIMIT 1) COLLATE NOCASE"
+                }
+                BookSort::Rating => {
+                    "(SELECT qr.rating FROM books_ratings_link AS qrl \
+                     JOIN ratings AS qr ON qr.id = qrl.rating \
+                     WHERE qrl.book = books.id LIMIT 1)"
+                }
+            };
+            let direction = match term.direction {
+                SortDirection::Ascending => "ASC",
+                SortDirection::Descending => "DESC",
+            };
+            format!("{expression} {direction}")
+        })
+        .collect::<Vec<_>>();
+    if !order.iter().any(|term| term.field == BookSort::Id) {
+        terms.push("books.id ASC".to_owned());
+    }
+    if terms.is_empty() {
+        terms.push("books.id ASC".to_owned());
+    }
+    terms.join(", ")
 }
 
 fn escape_like(value: &str) -> String {
