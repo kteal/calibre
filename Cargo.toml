@@ -1,0 +1,52 @@
+[package]
+name = "calibre"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["calibre contributors"]
+description = "Native Rust access to existing Calibre libraries"
+documentation = "https://docs.rs/calibre"
+repository = "https://github.com/kteal/calibre"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+keywords = ["calibre", "ebook", "library", "sqlite", "metadata"]
+categories = ["database", "filesystem"]
+include = [
+    "/src/**",
+    "/tests/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+    "/LICENSE-MIT",
+    "/LICENSE-APACHE",
+    "/docs/**",
+]
+
+[dependencies]
+rusqlite = { version = "0.40.1", default-features = false, features = ["bundled", "functions"] }
+tempfile = "3.27.0"
+unicode-normalization = "0.1.25"
+uuid = { version = "1.24.0", features = ["v4"] }
+
+[dev-dependencies]
+proptest = "1.11.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "deny"
+wildcard_dependencies = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
