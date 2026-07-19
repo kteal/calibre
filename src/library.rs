@@ -255,7 +255,7 @@ impl Library {
             validate_created_database(&connection, &staged)?;
             drop(connection);
             std::fs::OpenOptions::new()
-                .read(true)
+                .write(true)
                 .open(&staged)
                 .and_then(|file| file.sync_all())
                 .map_err(|source| {
@@ -712,13 +712,16 @@ mod tests {
                 }
             })
             .expect_err("injected failure");
-            assert!(matches!(
-                error,
-                Error::InvalidInput {
-                    field: "injected creation failure",
-                    ..
-                }
-            ));
+            assert!(
+                matches!(
+                    &error,
+                    Error::InvalidInput {
+                        field: "injected creation failure",
+                        ..
+                    }
+                ),
+                "unexpected error at {phase:?}: {error:?}"
+            );
             assert!(
                 !target.exists(),
                 "created root must be removed at {phase:?}"
