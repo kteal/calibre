@@ -391,6 +391,12 @@ pub struct NewBook {
     pub comments: Option<String>,
     /// Optional rating on Calibre's zero-to-ten storage scale.
     pub rating: Option<Rating>,
+    /// Optional publication date.
+    ///
+    /// Accepts `YYYY-MM-DD` or a Calibre UTC timestamp of the form
+    /// `YYYY-MM-DD HH:MM:SS[.fraction]+00:00`. Date-only values are stored at
+    /// midnight UTC.
+    pub publication_date: Option<String>,
     /// Source format files copied into the library.
     pub formats: Vec<FormatFile>,
     /// Optional JPEG cover source.
@@ -410,6 +416,7 @@ impl Default for NewBook {
             identifiers: BTreeMap::new(),
             comments: None,
             rating: None,
+            publication_date: None,
             formats: Vec::new(),
             cover: None,
         }
@@ -439,6 +446,13 @@ pub struct UpdateBook {
     pub comments: Option<Option<String>>,
     /// `Some(None)` clears the rating.
     pub rating: Option<Option<Rating>>,
+    /// Replacement publication date.
+    ///
+    /// `None` leaves the value unchanged, `Some(None)` clears it, and
+    /// `Some(Some(value))` sets it. Accepted values are `YYYY-MM-DD` and
+    /// Calibre UTC timestamps of the form
+    /// `YYYY-MM-DD HH:MM:SS[.fraction]+00:00`.
+    pub publication_date: Option<Option<String>>,
 }
 
 /// How a book should be removed.

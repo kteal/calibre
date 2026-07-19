@@ -5,11 +5,14 @@ This project follows Semantic Versioning.
 ## [Unreleased]
 
 - Open and validate schema-27 Calibre libraries in read-only or read-write mode.
+- Create new core schema-27 libraries natively in missing or empty directories
+  with staged failure cleanup and no executable dependency.
 - Report schema compatibility and operation capabilities.
 - Query and load books with core relationships, formats, sizes, and cover paths.
 - Compose relationship, identifier, format, rating, and cover filters with
   stable multi-column sorting.
-- Add and update books with compensated filesystem moves.
+- Add and update books with compensated filesystem moves and validated,
+  set/clear publication-date writes.
 - Add, replace, retrieve, copy, stream, and remove formats and covers.
 - Audit database integrity and core filesystem agreement without mutation.
 - Discover custom-column definitions and read scalar and normalized values.

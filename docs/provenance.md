@@ -70,6 +70,29 @@ The implementation registers independent `uuid4` and conservative `title_sort`
 SQLite functions because existing Calibre triggers call functions with those
 names. It does not reproduce Calibre's locale-aware algorithms.
 
+Native-creation research on 2026-07-19 used disposable empty libraries from
+Calibre 9.10.0 and 9.11.0. SQLite PRAGMA introspection and object-name queries
+recorded the application ID, schema version, table/column shapes, index
+membership, and the presence of bookkeeping triggers without reading schema
+SQL, view definitions, or trigger bodies. Row inspection recorded a fresh
+library UUID plus the four initial preference keys and JSON scalar/object
+values. Controlled removal experiments established that Calibre's core CLI
+requires `annotations_dirtied`, while `calibredb check_library`, add, list, and
+metadata writes do not require the legacy views or annotation FTS virtual
+tables.
+
+The creation DDL, constraints, indexes, and six small bookkeeping triggers are
+independent project work based on those observations and on the crate's own
+write invariants. They are not copies or translations of Calibre or Citadel
+schema SQL or trigger algorithms. Failure staging, validation, cleanup, and
+publication are project-specific. Paired black-box tests then ran
+`calibredb check_library`, metadata mutation, date exchange, and trash
+interoperation against the Rust-created result.
+
+The Calibre 9.11.0 x86_64 Linux archive used for the final creation oracle was
+downloaded from the official release host. Its SHA-512 digest matched the
+value published at `calibre-ebook.com/signatures` before extraction.
+
 ## Citadel research
 
 Citadel and its internal `libcalibre` crate informed test coverage and risk

@@ -12,6 +12,20 @@ Acceptance:
 
 Status: implemented. Exact sort and filename parity remains a documented gap.
 
+## Completed 0.1 batch: publication dates and native creation
+
+Acceptance:
+
+- validate and write publication dates while adding, updating, clearing,
+  trashing, restoring, and reopening books;
+- create a fresh schema-27 library without a runtime executable;
+- refuse existing contents and clean up staged state on failures;
+- pass the core lifecycle, audit, Calibre check, and bidirectional Calibre
+  mutation tests.
+
+Status: implemented for the documented core schema surface. Native creation
+does not initialize unsupported legacy views or annotation FTS state.
+
 ## Completed 0.1 batch: crash recovery
 
 Acceptance:
@@ -78,8 +92,7 @@ Acceptance:
 
 ## Deferred
 
-Library creation, full active-library OPF backup generation, whole-library
-restore, and proven cross-process coordination remain deferred. The ebook
-reader, editor,
+Full active-library OPF backup generation, whole-library restore, and proven
+cross-process coordination remain deferred. The ebook reader, editor,
 conversion engine, plugin runtime, content server, and device drivers stay out
 of scope.

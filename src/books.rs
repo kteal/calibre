@@ -96,6 +96,11 @@ impl Books {
     #[allow(clippy::needless_pass_by_value)] // Creation inputs intentionally transfer ownership.
     #[allow(clippy::too_many_lines)] // The transaction boundary keeps compensation visible.
     pub fn add(&self, input: NewBook) -> Result<Book> {
+        let publication_date = input
+            .publication_date
+            .as_deref()
+            .map(normalize_publication_date)
+            .transpose()?;
         let _guard = self.inner.lock_writer("add book")?;
         let mut connection = self.inner.write_connection("add book")?;
         let transaction = connection
@@ -116,8 +121,8 @@ impl Books {
             .join(" & ");
         transaction
             .execute(
-                "INSERT INTO books(title, sort, series_index, author_sort, path, uuid) \
-                 VALUES (?1, ?2, ?3, ?4, '', uuid4())",
+                "INSERT INTO books(title, sort, series_index, author_sort, path, uuid, pubdate) \
+                 VALUES (?1, ?2, ?3, ?4, '', uuid4(), COALESCE(?5, CURRENT_TIMESTAMP))",
                 params![
                     title,
                     title_sort,
@@ -126,7 +131,8 @@ impl Books {
                     } else {
                         input.series_index
                     },
-                    author_sort
+                    author_sort,
+                    publication_date
                 ],
             )
             .map_err(|error| database_error("insert book", &self.inner.database, error))?;
@@ -284,6 +290,11 @@ impl Books {
     #[allow(clippy::needless_pass_by_value)] // Update inputs are one-shot request values.
     #[allow(clippy::too_many_lines)] // One function owns the DB/filesystem compensation boundary.
     pub fn update(&self, id: BookId, update: UpdateBook) -> Result<Book> {
+        let publication_date = update
+            .publication_date
+            .as_ref()
+            .map(|value| value.as_deref().map(normalize_publication_date).transpose())
+            .transpose()?;
         let _guard = self.inner.lock_writer("update book")?;
         let existing = self.get(id)?;
         let title = update.title.as_deref().map_or_else(
@@ -469,6 +480,16 @@ impl Books {
                     database_error("update rating", &self.inner.database, error)
                 })?;
             }
+            if let Some(publication_date) = &publication_date {
+                transaction
+                    .execute(
+                        "UPDATE books SET pubdate = ?1 WHERE id = ?2",
+                        params![publication_date, id.get()],
+                    )
+                    .map_err(|error| {
+                        database_error("update publication date", &self.inner.database, error)
+                    })?;
+            }
 
             if should_move {
                 let new_parent = new_directory.parent().ok_or_else(|| Error::PathEscape {
@@ -626,6 +647,82 @@ impl Books {
         remove_empty_parent(&directory, &self.inner.root);
         journal.complete()?;
         Ok(())
+    }
+}
+
+fn normalize_publication_date(value: &str) -> Result<String> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 10 || bytes.get(4) != Some(&b'-') || bytes.get(7) != Some(&b'-') {
+        return Err(invalid_publication_date());
+    }
+    let year = parse_date_component(bytes, 0, 4)?;
+    let month = parse_date_component(bytes, 5, 7)?;
+    let day = parse_date_component(bytes, 8, 10)?;
+    if year == 0 || !(1..=12).contains(&month) || day == 0 || day > days_in_month(year, month) {
+        return Err(invalid_publication_date());
+    }
+    if bytes.len() == 10 {
+        return Ok(format!("{value} 00:00:00+00:00"));
+    }
+    if bytes.get(10) != Some(&b' ') || bytes.len() < 25 {
+        return Err(invalid_publication_date());
+    }
+    let hour = parse_date_component(bytes, 11, 13)?;
+    let minute = parse_date_component(bytes, 14, 16)?;
+    let second = parse_date_component(bytes, 17, 19)?;
+    if bytes.get(13) != Some(&b':')
+        || bytes.get(16) != Some(&b':')
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
+        return Err(invalid_publication_date());
+    }
+    let suffix_start = bytes
+        .len()
+        .checked_sub(6)
+        .ok_or_else(invalid_publication_date)?;
+    if bytes.get(suffix_start..) != Some(b"+00:00") {
+        return Err(invalid_publication_date());
+    }
+    let fraction = &bytes[19..suffix_start];
+    if !fraction.is_empty()
+        && (fraction.first() != Some(&b'.')
+            || fraction.len() == 1
+            || fraction.len() > 7
+            || !fraction[1..].iter().all(u8::is_ascii_digit))
+    {
+        return Err(invalid_publication_date());
+    }
+    Ok(value.to_owned())
+}
+
+fn parse_date_component(bytes: &[u8], start: usize, end: usize) -> Result<u32> {
+    let component = bytes.get(start..end).ok_or_else(invalid_publication_date)?;
+    if !component.iter().all(u8::is_ascii_digit) {
+        return Err(invalid_publication_date());
+    }
+    component.iter().try_fold(0_u32, |value, digit| {
+        value
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(u32::from(digit - b'0')))
+            .ok_or_else(invalid_publication_date)
+    })
+}
+
+const fn days_in_month(year: u32, month: u32) -> u32 {
+    match month {
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
+        2 => 28,
+        _ => 31,
+    }
+}
+
+fn invalid_publication_date() -> Error {
+    Error::InvalidInput {
+        field: "publication date",
+        reason: "expected YYYY-MM-DD or YYYY-MM-DD HH:MM:SS[.fraction]+00:00".into(),
     }
 }
 

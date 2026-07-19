@@ -12,21 +12,24 @@ The crate rejects older, newer, zero-version, and structurally incomplete
 databases in both modes. Future releases may add read-only support for other
 versions after fixtures prove each schema shape.
 
-Calibre 9.10.0 and 9.11.0 on Linux passed the create, Rust read, Rust write,
-Calibre reopen, Calibre write, Rust reopen cycle on 2026-07-19. Both versions
-restored Rust-created book and format trash, and Rust restored book-trash
-entries created by each Calibre version.
+Calibre 9.10.0 and 9.11.0 on Linux passed both creation directions on
+2026-07-19: Calibre-created libraries survived Rust reads and writes, and
+Rust-created libraries passed `calibredb check_library`, Calibre writes, and a
+Rust reopen. Both versions read Rust-written publication dates, Rust read
+Calibre-written dates, both restored Rust-created book and format trash, and
+Rust restored book-trash entries created by each Calibre version.
 
 ## Implemented operations
 
 | Area | Status | Constraint |
 |---|---|---|
-| Open | Supported | Existing schema-27 libraries only |
+| Open | Supported | Schema-27 libraries |
+| Create | Supported | Missing target with an existing parent, or an empty target; hard-link support required |
 | Read core metadata | Supported | Required schema signature must match |
 | Query and pagination | Supported | Composable AND filters, multi-sort, stable ID tie break |
 | Resolve assets | Supported | Rejects traversal and escaping symlinks |
-| Add book | Supported with gaps | Conservative English sort and filename generation |
-| Update core metadata | Supported with gaps | Moves directory for title or first-author changes |
+| Add book | Supported with gaps | Includes publication date; conservative English sort and filename generation |
+| Update core metadata | Supported with gaps | Publication date can be left, set, or cleared; moves directory for title or first-author changes |
 | Formats | Supported | Default removal uses trash; explicit permanent removal is available |
 | Covers | Supported | Path and streaming I/O; `cover.jpg` and flag kept together |
 | Read-only audit | Supported | SQLite quick check and core asset agreement |
@@ -43,6 +46,29 @@ reports missing files, size mismatches, cover-flag mismatches, unsafe paths, and
 SQLite quick-check failures without changing the library.
 
 ## Known gaps
+
+Native creation writes the application ID, schema version 27, required
+core/deferred-state tables, indexes, independent bookkeeping triggers, a fresh
+library UUID, and Calibre's observed initial preference rows. It never
+overwrites a non-empty target. The database is staged, validated, synced, and
+published inside the canonical root; an error before publication removes staged
+state and removes a target directory only when this call created it. Final
+publication uses a same-directory, no-clobber hard link so a concurrent
+`metadata.db` cannot be replaced. Creation returns an I/O error on filesystems
+without hard-link support.
+
+The creation schema is deliberately limited to the crate's supported core
+surface. It does not create Calibre's legacy convenience views or annotation
+FTS virtual tables and triggers. Calibre 9.10.0 and 9.11.0 core CLI operations,
+including `check_library`, metadata mutation, trash interoperation, and reopen,
+passed against this shape. Annotation search, custom-column creation, and FTS
+maintenance are not covered by the creation guarantee.
+
+Publication-date inputs accept an exact Gregorian `YYYY-MM-DD` value or a UTC
+Calibre timestamp in `YYYY-MM-DD HH:MM:SS[.fraction]+00:00` form, with up to
+six fractional digits. Date-only values are stored at `00:00:00+00:00`.
+Invalid dates, times, offsets, and timestamp shapes are rejected before a
+SQLite write. The update API distinguishes unchanged, set, and cleared dates.
 
 Calibre computes title sorts, author sorts, language normalization, Unicode
 category matching, filename transliteration, and path shortening with locale

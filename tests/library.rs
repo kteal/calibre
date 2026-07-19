@@ -25,12 +25,168 @@ fn populated_input() -> NewBook {
         ]),
         comments: Some("<p>Hello</p>".into()),
         rating: Some(Rating::new(8).expect("valid rating")),
+        publication_date: Some("0800-01-01".into()),
         formats: vec![
             FormatFile::new("tests/fixtures/sample.txt"),
             FormatFile::new("tests/fixtures/sample.epub"),
         ],
         cover: Some("tests/fixtures/cover.jpg".into()),
     }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One test keeps validation and the three-state API together.
+fn publication_dates_set_update_clear_validate_and_reopen() {
+    let fixture = support::TestLibrary::new();
+    let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+        .expect("open writable");
+    let book = library
+        .books()
+        .add(NewBook {
+            title: "Dated".into(),
+            publication_date: Some("2024-02-29".into()),
+            ..NewBook::default()
+        })
+        .expect("set date while adding");
+    assert_eq!(
+        book.publication_date.as_deref(),
+        Some("2024-02-29 00:00:00+00:00")
+    );
+
+    let updated = library
+        .books()
+        .update(
+            book.id,
+            UpdateBook {
+                publication_date: Some(Some("2025-03-04 05:06:07.123456+00:00".into())),
+                ..UpdateBook::default()
+            },
+        )
+        .expect("update date");
+    assert_eq!(
+        updated.publication_date.as_deref(),
+        Some("2025-03-04 05:06:07.123456+00:00")
+    );
+    let unchanged = library
+        .books()
+        .update(book.id, UpdateBook::default())
+        .expect("leave date unchanged");
+    assert_eq!(unchanged.publication_date, updated.publication_date);
+
+    let connection = rusqlite::Connection::open(fixture.database()).expect("inspect database");
+    connection
+        .execute(
+            "DELETE FROM metadata_dirtied WHERE book = ?1",
+            [book.id.get()],
+        )
+        .expect("clear dirty marker");
+    let error = library
+        .books()
+        .update(
+            book.id,
+            UpdateBook {
+                publication_date: Some(Some("2025-02-29".into())),
+                ..UpdateBook::default()
+            },
+        )
+        .expect_err("invalid non-leap date");
+    assert!(matches!(
+        error,
+        Error::InvalidInput {
+            field: "publication date",
+            ..
+        }
+    ));
+    let dirty: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM metadata_dirtied WHERE book = ?1",
+            [book.id.get()],
+            |row| row.get(0),
+        )
+        .expect("read dirty marker");
+    assert_eq!(dirty, 0, "validation must precede SQLite mutation");
+
+    let cleared = library
+        .books()
+        .update(
+            book.id,
+            UpdateBook {
+                publication_date: Some(None),
+                ..UpdateBook::default()
+            },
+        )
+        .expect("clear date");
+    assert!(cleared.publication_date.is_none());
+    let dirty: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM metadata_dirtied WHERE book = ?1",
+            [book.id.get()],
+            |row| row.get(0),
+        )
+        .expect("read dirty marker after clear");
+    assert_eq!(dirty, 1);
+    drop(connection);
+    drop(library);
+
+    let reopened = Library::open(fixture.path()).expect("reopen");
+    assert!(
+        reopened
+            .books()
+            .get(book.id)
+            .expect("round-tripped book")
+            .publication_date
+            .is_none()
+    );
+
+    let invalid_fixture = support::TestLibrary::new();
+    let invalid_library =
+        Library::open_with(invalid_fixture.path(), OpenOptions::new().read_write(true))
+            .expect("open invalid-input fixture");
+    assert!(matches!(
+        invalid_library.books().add(NewBook {
+            publication_date: Some("2024-01-01T00:00:00Z".into()),
+            ..NewBook::default()
+        }),
+        Err(Error::InvalidInput {
+            field: "publication date",
+            ..
+        })
+    ));
+    assert_eq!(
+        invalid_library
+            .books()
+            .query(BookQuery::default())
+            .expect("query after invalid add")
+            .total,
+        0
+    );
+}
+
+#[test]
+fn publication_date_survives_book_trash_round_trip() {
+    let fixture = support::TestLibrary::new();
+    let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+        .expect("open writable");
+    let book = library
+        .books()
+        .add(NewBook {
+            title: "Trash date".into(),
+            publication_date: Some("2020-01-02".into()),
+            ..NewBook::default()
+        })
+        .expect("add dated book");
+    library
+        .books()
+        .remove(book.id, DeletionMode::Trash)
+        .expect("trash dated book");
+    let restored = library
+        .trash()
+        .restore_book(book.id)
+        .expect("restore dated book");
+    assert_eq!(
+        restored.publication_date.as_deref(),
+        Some("2020-01-02 00:00:00+00:00")
+    );
 }
 
 #[test]
@@ -60,6 +216,192 @@ fn read_only_open_does_not_create_sqlite_sidecars() {
             .expect("metadata")
             .modified()
             .expect("mtime")
+    );
+}
+
+#[test]
+fn creates_missing_and_existing_empty_libraries_and_reopens_them() {
+    let parent = tempfile::tempdir().expect("creation parent");
+    let missing = parent.path().join("missing-library");
+    let library = Library::create(&missing).expect("create missing target");
+    assert_eq!(
+        library.root(),
+        missing.canonicalize().expect("canonical root")
+    );
+    assert_eq!(library.mode(), calibre::OpenMode::ReadWrite);
+    assert_eq!(library.compatibility().schema_version, 27);
+    assert_eq!(library.compatibility().application_id, 0x6361_6c69);
+    assert!(library.capabilities().write_books);
+    assert!(library.capabilities().write_formats);
+    assert!(library.capabilities().write_covers);
+    assert!(library.capabilities().permanent_delete);
+    assert!(library.capabilities().calibre_trash);
+    assert_eq!(
+        library
+            .books()
+            .query(BookQuery::default())
+            .expect("empty catalog")
+            .total,
+        0
+    );
+    assert!(library.auditor().run().expect("audit").is_clean());
+    let connection =
+        rusqlite::Connection::open(missing.join("metadata.db")).expect("inspect created database");
+    for object in [
+        "books_idx",
+        "books_authors_link_bidx",
+        "books_insert_trg",
+        "books_update_trg",
+        "books_delete_trg",
+        "books_pages_link_create_trigger",
+    ] {
+        let count: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name = ?1",
+                [object],
+                |row| row.get(0),
+            )
+            .expect("inspect schema object");
+        assert_eq!(count, 1, "missing schema object {object}");
+    }
+    drop(connection);
+    drop(library);
+    let reopened = Library::open_with(&missing, OpenOptions::new().read_write(true))
+        .expect("reopen created library");
+    assert_eq!(
+        reopened
+            .books()
+            .query(BookQuery::default())
+            .expect("reopened catalog")
+            .total,
+        0
+    );
+
+    let empty = parent.path().join("empty-library");
+    std::fs::create_dir(&empty).expect("create empty target");
+    let empty_library = Library::create(&empty).expect("create in empty target");
+    assert!(empty_library.root().join("metadata.db").is_file());
+}
+
+#[test]
+fn creation_refuses_existing_state() {
+    let parent = tempfile::tempdir().expect("creation parent");
+    let unrelated = parent.path().join("unrelated");
+    std::fs::create_dir(&unrelated).expect("unrelated directory");
+    std::fs::write(unrelated.join("keep.txt"), b"user work").expect("unrelated file");
+    assert!(matches!(
+        Library::create(&unrelated),
+        Err(Error::InvalidLibrary { .. })
+    ));
+    assert_eq!(
+        std::fs::read(unrelated.join("keep.txt")).expect("preserved unrelated file"),
+        b"user work"
+    );
+
+    let metadata = parent.path().join("metadata");
+    std::fs::create_dir(&metadata).expect("metadata directory");
+    std::fs::write(metadata.join("metadata.db"), b"do not replace").expect("existing metadata.db");
+    assert!(matches!(
+        Library::create(&metadata),
+        Err(Error::InvalidLibrary { .. })
+    ));
+    assert_eq!(
+        std::fs::read(metadata.join("metadata.db")).expect("preserved metadata.db"),
+        b"do not replace"
+    );
+
+    let library_path = parent.path().join("library");
+    drop(Library::create(&library_path).expect("first creation"));
+    assert!(matches!(
+        Library::create(&library_path),
+        Err(Error::InvalidLibrary { .. })
+    ));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let real = parent.path().join("real-empty");
+        let linked = parent.path().join("linked-empty");
+        std::fs::create_dir(&real).expect("real empty directory");
+        symlink(&real, &linked).expect("creation target symlink");
+        assert!(matches!(
+            Library::create(&linked),
+            Err(Error::InvalidLibrary { .. })
+        ));
+        assert!(
+            std::fs::read_dir(real)
+                .expect("real directory remains empty")
+                .next()
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn created_library_supports_the_full_core_lifecycle() {
+    let parent = tempfile::tempdir().expect("creation parent");
+    let root = parent.path().join("library");
+    let library = Library::create(&root).expect("create library");
+    let book = library.books().add(populated_input()).expect("add book");
+    assert_eq!(
+        book.publication_date.as_deref(),
+        Some("0800-01-01 00:00:00+00:00")
+    );
+    let updated = library
+        .books()
+        .update(
+            book.id,
+            UpdateBook {
+                title: Some("Created library update".into()),
+                publication_date: Some(Some("2024-07-08".into())),
+                ..UpdateBook::default()
+            },
+        )
+        .expect("update book");
+    assert_eq!(
+        updated.publication_date.as_deref(),
+        Some("2024-07-08 00:00:00+00:00")
+    );
+
+    library
+        .formats()
+        .remove(updated.id, "TXT")
+        .expect("trash format");
+    library
+        .trash()
+        .restore_format(updated.id, "TXT")
+        .expect("restore format");
+    assert_eq!(
+        library.formats().read(updated.id, "TXT").expect("format"),
+        include_bytes!("fixtures/sample.txt")
+    );
+    library.covers().remove(updated.id).expect("remove cover");
+    library
+        .covers()
+        .replace(updated.id, "tests/fixtures/cover.jpg")
+        .expect("restore cover");
+
+    library
+        .books()
+        .remove(updated.id, DeletionMode::Trash)
+        .expect("trash book");
+    let restored = library
+        .trash()
+        .restore_book(updated.id)
+        .expect("restore book");
+    assert_eq!(
+        restored.publication_date.as_deref(),
+        Some("2024-07-08 00:00:00+00:00")
+    );
+    assert_eq!(restored.formats.len(), 2);
+    assert!(restored.cover_path.is_some());
+    assert!(library.auditor().run().expect("final audit").is_clean());
+    drop(library);
+    let reopened = Library::open(&root).expect("reopen completed lifecycle");
+    assert_eq!(
+        reopened.books().get(restored.id).expect("book").title,
+        restored.title
     );
 }
 

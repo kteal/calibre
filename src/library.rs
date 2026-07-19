@@ -10,7 +10,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 pub(crate) const SUPPORTED_SCHEMA_VERSION: u32 = 27;
-const CALIBRE_APPLICATION_ID: u32 = 0x6361_6c69;
+pub(crate) const CALIBRE_APPLICATION_ID: u32 = 0x6361_6c69;
 
 /// Access mode for an opened library.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -111,13 +111,34 @@ pub(crate) struct LibraryInner {
     write_lock: Mutex<()>,
 }
 
-/// A validated handle to an existing Calibre library.
+/// A validated handle to a Calibre library.
 #[derive(Clone, Debug)]
 pub struct Library {
     pub(crate) inner: Arc<LibraryInner>,
 }
 
 impl Library {
+    /// Creates and opens a new schema-27 Calibre library.
+    ///
+    /// The target may be missing or an existing empty directory on a
+    /// filesystem that supports hard links. Creation refuses every non-empty
+    /// directory and never replaces `metadata.db`.
+    /// The database is built under a private name inside the validated target
+    /// root, validated, synced, and then published without replacement.
+    ///
+    /// The returned handle is read-write. The initialized schema supports this
+    /// crate's core metadata, format, cover, recovery, audit, and trash
+    /// operations. Custom-column writes, annotation search, and FTS maintenance
+    /// remain unsupported.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsafe or non-empty target, filesystem failure,
+    /// database initialization failure, or failed post-creation validation.
+    pub fn create(path: impl AsRef<Path>) -> Result<Self> {
+        Self::create_with_hook(path.as_ref(), |_| Ok(()))
+    }
+
     /// Opens an existing library read-only.
     ///
     /// # Errors
@@ -205,6 +226,56 @@ impl Library {
                 write_lock: Mutex::new(()),
             }),
         })
+    }
+
+    fn create_with_hook(
+        supplied: &Path,
+        mut hook: impl FnMut(CreationPhase) -> Result<()>,
+    ) -> Result<Self> {
+        let (root, created_root) = prepare_creation_root(supplied)?;
+        let database = root.join("metadata.db");
+        let staged = root.join(format!(
+            ".calibre-rs-metadata-{}.tmp",
+            Uuid::new_v4().simple()
+        ));
+        let mut published = false;
+        let result = (|| {
+            hook(CreationPhase::RootPrepared)?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&staged)
+                .map_err(|source| {
+                    crate::error::io_error("create staged metadata.db", &staged, source)
+                })?;
+            let mut connection =
+                open_connection(&staged, OpenMode::ReadWrite, Duration::from_secs(5))?;
+            crate::schema::initialize(&mut connection, &staged)?;
+            hook(CreationPhase::SchemaCommitted)?;
+            validate_created_database(&connection, &staged)?;
+            drop(connection);
+            std::fs::OpenOptions::new()
+                .read(true)
+                .open(&staged)
+                .and_then(|file| file.sync_all())
+                .map_err(|source| {
+                    crate::error::io_error("sync staged metadata.db", &staged, source)
+                })?;
+            std::fs::hard_link(&staged, &database).map_err(|source| {
+                crate::error::io_error("publish metadata.db", &database, source)
+            })?;
+            published = true;
+            hook(CreationPhase::Published)?;
+            std::fs::remove_file(&staged).map_err(|source| {
+                crate::error::io_error("remove staged metadata.db link", &staged, source)
+            })?;
+            sync_creation_directory(&root)?;
+            Self::open_with(&root, OpenOptions::new().read_write(true))
+        })();
+        if result.is_err() {
+            cleanup_failed_creation(&root, &staged, &database, published, created_root)?;
+        }
+        result
     }
 
     /// Returns the canonical library root.
@@ -380,7 +451,7 @@ fn pragma_u32(connection: &Connection, name: &'static str, path: &Path) -> Resul
         .map_err(|error| database_error("read schema identity", path, error))
 }
 
-fn validate_schema(connection: &Connection, path: &Path) -> Result<()> {
+pub(crate) fn validate_schema(connection: &Connection, path: &Path) -> Result<()> {
     const REQUIRED: &[(&str, &[&str])] = &[
         (
             "books",
@@ -443,6 +514,156 @@ fn validate_schema(connection: &Connection, path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CreationPhase {
+    RootPrepared,
+    SchemaCommitted,
+    Published,
+}
+
+fn prepare_creation_root(supplied: &Path) -> Result<(PathBuf, bool)> {
+    match std::fs::symlink_metadata(supplied) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(Error::InvalidLibrary {
+                    path: supplied.to_path_buf(),
+                    reason: "creation target must be a real directory".into(),
+                });
+            }
+            let root = std::fs::canonicalize(supplied).map_err(|source| {
+                crate::error::io_error("canonicalize creation target", supplied, source)
+            })?;
+            let mut entries = std::fs::read_dir(&root).map_err(|source| {
+                crate::error::io_error("inspect creation target", &root, source)
+            })?;
+            if entries
+                .next()
+                .transpose()
+                .map_err(|source| crate::error::io_error("inspect creation target", &root, source))?
+                .is_some()
+            {
+                return Err(Error::InvalidLibrary {
+                    path: root,
+                    reason: "creation target is not empty".into(),
+                });
+            }
+            Ok((root, false))
+        }
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            let parent = creation_parent(supplied);
+            let parent = std::fs::canonicalize(parent).map_err(|source| {
+                crate::error::io_error("canonicalize creation parent", parent, source)
+            })?;
+            let name = supplied.file_name().ok_or_else(|| Error::InvalidLibrary {
+                path: supplied.to_path_buf(),
+                reason: "creation target has no directory name".into(),
+            })?;
+            let root = parent.join(name);
+            std::fs::create_dir(&root).map_err(|source| {
+                crate::error::io_error("create library directory", &root, source)
+            })?;
+            let canonical = std::fs::canonicalize(&root).map_err(|source| {
+                crate::error::io_error("canonicalize created library", &root, source)
+            })?;
+            if canonical != root {
+                let _ = std::fs::remove_dir(&root);
+                return Err(Error::PathEscape {
+                    path: supplied.to_path_buf(),
+                    reason: "created library root did not resolve to its validated target".into(),
+                });
+            }
+            Ok((canonical, true))
+        }
+        Err(source) => Err(crate::error::io_error(
+            "inspect creation target",
+            supplied,
+            source,
+        )),
+    }
+}
+
+fn creation_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+fn validate_created_database(connection: &Connection, database: &Path) -> Result<()> {
+    let schema_version = pragma_u32(connection, "user_version", database)?;
+    let application_id = pragma_u32(connection, "application_id", database)?;
+    if schema_version != SUPPORTED_SCHEMA_VERSION || application_id != CALIBRE_APPLICATION_ID {
+        return Err(Error::InvalidLibrary {
+            path: database.to_path_buf(),
+            reason: "new database has an unexpected schema identity".into(),
+        });
+    }
+    validate_schema(connection, database)?;
+    let books: i64 = connection
+        .query_row("SELECT count(*) FROM books", [], |row| row.get(0))
+        .map_err(|error| database_error("validate empty catalog", database, error))?;
+    if books != 0 {
+        return Err(Error::InvalidLibrary {
+            path: database.to_path_buf(),
+            reason: "new database catalog is not empty".into(),
+        });
+    }
+    Ok(())
+}
+
+fn cleanup_failed_creation(
+    root: &Path,
+    staged: &Path,
+    database: &Path,
+    published: bool,
+    created_root: bool,
+) -> Result<()> {
+    remove_creation_file(staged)?;
+    if published {
+        remove_creation_file(database)?;
+    }
+    for suffix in ["-journal", "-wal", "-shm"] {
+        remove_creation_file(&path_with_suffix(staged, suffix))?;
+        remove_creation_file(&path_with_suffix(database, suffix))?;
+    }
+    if created_root {
+        std::fs::remove_dir(root).map_err(|source| {
+            crate::error::io_error("remove failed library directory", root, source)
+        })?;
+    }
+    Ok(())
+}
+
+fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+fn remove_creation_file(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(crate::error::io_error(
+            "clean up failed library creation",
+            path,
+            source,
+        )),
+    }
+}
+
+#[cfg(unix)]
+fn sync_creation_directory(path: &Path) -> Result<()> {
+    std::fs::File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| crate::error::io_error("sync created library", path, source))
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
+const fn sync_creation_directory(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
 fn has_active_custom_columns(connection: &Connection, path: &Path) -> Result<bool> {
     connection
         .query_row(
@@ -463,5 +684,95 @@ pub(crate) fn database_error(
         operation,
         path: path.to_path_buf(),
         message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CreationPhase, Library};
+    use crate::Error;
+
+    #[test]
+    fn injected_creation_failures_remove_every_staged_artifact() {
+        for phase in [
+            CreationPhase::RootPrepared,
+            CreationPhase::SchemaCommitted,
+            CreationPhase::Published,
+        ] {
+            let parent = tempfile::tempdir().expect("temporary creation parent");
+            let target = parent.path().join(format!("failure-{phase:?}"));
+            let error = Library::create_with_hook(&target, |current| {
+                if current == phase {
+                    Err(Error::InvalidInput {
+                        field: "injected creation failure",
+                        reason: format!("failed at {phase:?}"),
+                    })
+                } else {
+                    Ok(())
+                }
+            })
+            .expect_err("injected failure");
+            assert!(matches!(
+                error,
+                Error::InvalidInput {
+                    field: "injected creation failure",
+                    ..
+                }
+            ));
+            assert!(
+                !target.exists(),
+                "created root must be removed at {phase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn injected_creation_failure_preserves_an_existing_empty_target() {
+        let parent = tempfile::tempdir().expect("temporary creation parent");
+        let target = parent.path().join("empty");
+        std::fs::create_dir(&target).expect("empty target");
+        Library::create_with_hook(&target, |phase| {
+            if phase == CreationPhase::SchemaCommitted {
+                Err(Error::InvalidInput {
+                    field: "injected creation failure",
+                    reason: "after schema".into(),
+                })
+            } else {
+                Ok(())
+            }
+        })
+        .expect_err("injected failure");
+        assert!(target.is_dir());
+        assert_eq!(
+            std::fs::read_dir(&target).expect("inspect target").count(),
+            0
+        );
+    }
+
+    #[test]
+    fn creation_does_not_replace_metadata_published_by_a_racer() {
+        let parent = tempfile::tempdir().expect("temporary creation parent");
+        let target = parent.path().join("empty");
+        std::fs::create_dir(&target).expect("empty target");
+        let database = target.join("metadata.db");
+        Library::create_with_hook(&target, |phase| {
+            if phase == CreationPhase::SchemaCommitted {
+                std::fs::write(&database, b"concurrent owner").expect("racing metadata.db");
+            }
+            Ok(())
+        })
+        .expect_err("no-clobber publication");
+        assert_eq!(
+            std::fs::read(database).expect("preserved racing metadata.db"),
+            b"concurrent owner"
+        );
+    }
+
+    #[test]
+    fn bare_relative_creation_uses_the_current_directory_as_parent() {
+        assert_eq!(
+            super::creation_parent(std::path::Path::new("relative-library")),
+            std::path::Path::new(".")
+        );
     }
 }

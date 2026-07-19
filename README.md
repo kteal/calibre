@@ -7,7 +7,7 @@
 [![Rust 2024](https://img.shields.io/badge/Rust-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license-review)
 
-`calibre` is a native Rust crate for reading and writing existing Calibre
+`calibre` is a native Rust crate for creating, reading, and writing Calibre
 libraries. It reads `metadata.db` with SQLite and works with book directories,
 formats, covers, and core metadata. Your program does not need the Calibre
 executable, Python, or a Calibre installation at runtime.
@@ -23,11 +23,12 @@ compatibility test has passed against Calibre 9.10.0 and 9.11.0 on Linux.
 The first milestone provides:
 
 - read-only and read-write opening with schema and application-ID validation;
+- native creation of empty schema-27 libraries;
 - capability reporting;
 - composable book filters, multi-column sorting, pagination, and full core
   metadata loading;
 - checked format and cover paths with traversal and symlink containment;
-- book creation and core metadata updates;
+- book creation and core metadata updates, including publication dates;
 - staged and streaming format and cover add, replace, read, copy, and removal;
 - compensated directory moves after title or first-author changes;
 - read-only library audits for database, format, cover, and path disagreement;
@@ -40,7 +41,8 @@ The first milestone provides:
   or full-text-search state.
 
 Locale-aware sort generation, exact filename parity, custom-column writes,
-preferences, notes, annotations, and FTS maintenance remain unsupported.
+preferences, notes, annotations, annotation search, and FTS maintenance remain
+unsupported.
 Whole-book trash refuses books with annotation, plugin, conversion-option, or
 last-read state because core OPF restoration cannot preserve it. Composite
 custom-column values require Calibre's template engine and return
@@ -51,13 +53,10 @@ state it cannot update. Read
 ## Example
 
 ```rust,no_run
-use calibre::{BookQuery, FormatFile, Library, NewBook, OpenOptions};
+use calibre::{BookQuery, FormatFile, Library, NewBook};
 
 fn main() -> Result<(), calibre::Error> {
-    let library = Library::open_with(
-        "/path/to/library",
-        OpenOptions::new().read_write(true),
-    )?;
+    let library = Library::create("/path/to/new-library")?;
 
     let page = library.books().query(BookQuery::default())?;
     println!("{} books", page.total);
@@ -65,6 +64,7 @@ fn main() -> Result<(), calibre::Error> {
     let book = library.books().add(NewBook {
         title: "The Odyssey".into(),
         authors: vec!["Homer".into()],
+        publication_date: Some("0800-01-01".into()),
         formats: vec![FormatFile::new("/tmp/odyssey.epub")],
         ..NewBook::default()
     })?;
@@ -78,6 +78,20 @@ fn main() -> Result<(), calibre::Error> {
 
 The API is synchronous. Async applications should call it from a
 blocking-worker thread.
+
+`Library::create` accepts a missing target whose parent exists or an existing
+empty directory on a filesystem with hard-link support. It refuses all existing
+contents, including `metadata.db`. Creation stages and validates the database
+inside the canonical target root before publishing it without replacement and
+returns a read-write handle. The generated core schema has passed
+`calibredb check_library` and bidirectional mutation tests with Calibre 9.10.0
+and 9.11.0. It intentionally omits unsupported legacy database views and
+annotation-search virtual tables; use Calibre if those surfaces must exist
+before first open.
+
+Publication-date writes accept `YYYY-MM-DD` and Calibre UTC timestamps written
+as `YYYY-MM-DD HH:MM:SS[.fraction]+00:00`. Date-only input is normalized to
+midnight UTC. Updates can leave, set, or clear the stored date.
 
 ## Safety and coordination
 

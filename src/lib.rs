@@ -1,4 +1,4 @@
-//! Native, synchronous access to existing Calibre libraries.
+//! Native, synchronous creation of and access to Calibre libraries.
 //!
 //! This crate does not invoke Calibre or require it at runtime. Start by
 //! opening a library and querying a page of books:
@@ -12,6 +12,22 @@
 //! for book in page.items {
 //!     println!("{}: {}", book.id, book.title);
 //! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! A new core schema-27 library can be created without Calibre or Python:
+//!
+//! ```no_run
+//! use calibre::{Library, NewBook};
+//!
+//! # fn main() -> Result<(), calibre::Error> {
+//! let library = Library::create("/path/to/new-library")?;
+//! library.books().add(NewBook {
+//!     title: "A dated book".into(),
+//!     publication_date: Some("2024-02-29".into()),
+//!     ..NewBook::default()
+//! })?;
 //! # Ok(())
 //! # }
 //! ```
@@ -32,6 +48,7 @@ mod model;
 mod opf;
 mod paths;
 mod recovery;
+mod schema;
 mod sql;
 mod trash;
 

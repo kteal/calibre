@@ -15,9 +15,12 @@ cargo clippy --all-targets --all-features -- \
 cargo doc --all-features --no-deps
 ```
 
-Unit tests cover path validation and sanitization properties. Integration tests
-build a fresh schema-27 library for each case. They cover open modes, schema
-rejection, full metadata, rich queries, concurrent reads, streaming assets,
+Unit tests cover path validation, sanitization properties, and injected native
+creation failures before and after the schema transaction. Integration tests
+build a fresh schema-27 library for each case. They cover native creation from
+missing and empty directories, refusal of existing contents, reopen, the full
+created-library lifecycle, open modes, schema rejection, publication-date
+validation and round trips, full metadata, rich queries, concurrent reads, streaming assets,
 read-only audits, custom-column reads, staged-write rollback, directory moves,
 permanent deletion, Calibre trash, recovery journals, and Unix symlink escape.
 Trash tests cover Unicode listing metadata, format collisions, whole-book core
@@ -47,6 +50,11 @@ The test performs this cycle in a temporary directory:
 5. Rust trashes a format and Calibre restores it.
 6. Calibre trashes a book and Rust restores it.
 7. Rust trashes that book and Calibre restores it.
+8. Rust creates a new library, Calibre checks and mutates it, and Rust reopens
+   the result.
+
+The paired metadata cycle also proves that Calibre reads a Rust-written
+publication date and Rust reads a Calibre-written date.
 
 Record the command output and Calibre version in `docs/compatibility.md` before
 claiming support for a release or platform.

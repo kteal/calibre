@@ -134,3 +134,29 @@ operation unsupported instead of discarding deferred state.
 Trash listing never creates directories in read-only mode. Explicit deletion
 and expiry operate only on numeric entry directories and reject symlinks.
 Expiry compares the directory modification time with a caller-supplied age.
+
+## ADR-0005: native schema-27 library creation
+
+Status: accepted for pre-release 0.1.0.
+
+`Library::create` accepts either a missing final directory beneath an existing
+canonical parent or an existing, canonical, empty directory. It rejects a root
+symlink, a file, any existing directory entry, and therefore every existing
+`metadata.db`. No overwrite option exists.
+
+Creation first establishes the canonical library root, then reserves a
+randomly named database file inside it with create-new semantics. One SQLite
+transaction creates the independently authored core schema and initial
+library-level rows. The crate validates the application ID, schema version,
+required columns, and empty catalog, syncs the staged file, and publishes it as
+`metadata.db` with a same-directory hard link that cannot replace an existing
+name, then removes the staging link. Failures remove the staged file and
+sidecars; a root created by the call is removed only after it is empty again.
+This keeps all database and cleanup work inside the validated target root and
+prevents a partial database from looking like a library.
+
+The initializer contains the tables, indexes, and bookkeeping triggers needed
+by the crate's supported operations and the tested Calibre 9.10/9.11 core CLI
+surface. It does not claim compatibility for unsupported legacy views,
+annotation FTS, custom-column writes, or Calibre preferences beyond the
+observed empty-library seed values.
