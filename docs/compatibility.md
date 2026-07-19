@@ -12,11 +12,10 @@ The crate rejects older, newer, zero-version, and structurally incomplete
 databases in both modes. Future releases may add read-only support for other
 versions after fixtures prove each schema shape.
 
-Calibre 9.10.0 on Linux passed the create, Rust read, Rust write, Calibre reopen,
-Calibre write, Rust reopen cycle again on 2026-07-19. The same executable
-restored Rust-created book and format trash, and Rust restored a
-Calibre-created book-trash entry. Calibre 9.11.0 documentation and source tag
-informed research, but no 9.11.0 executable test has run.
+Calibre 9.10.0 and 9.11.0 on Linux passed the create, Rust read, Rust write,
+Calibre reopen, Calibre write, Rust reopen cycle on 2026-07-19. Both versions
+restored Rust-created book and format trash, and Rust restored book-trash
+entries created by each Calibre version.
 
 ## Implemented operations
 

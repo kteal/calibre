@@ -57,10 +57,14 @@ OPF files supplied metadata-field examples. The crate's OPF reader, writer,
 recovery journal, and SQLite statements are independent work. No Calibre trash
 or OPF implementation entered this crate.
 
-Paired compatibility tests then exercised both directions: Calibre restored
-Rust-created book and format entries, and Rust restored a book removed by
-Calibre. The tests call Calibre only as a development oracle and do not add a
-runtime dependency.
+Paired compatibility tests with Calibre 9.10.0 and 9.11.0 exercised both
+directions: Calibre restored Rust-created book and format entries, and Rust
+restored a book removed by Calibre. The tests call Calibre only as a
+development oracle and do not add a runtime dependency.
+
+The 9.11.0 run used Calibre's official x86_64 Linux archive. Its SHA-512 digest
+matched the value published at `calibre-ebook.com/signatures` before
+extraction.
 
 The implementation registers independent `uuid4` and conservative `title_sort`
 SQLite functions because existing Calibre triggers call functions with those

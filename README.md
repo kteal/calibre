@@ -18,7 +18,7 @@ project or its maintainers.
 ## Status
 
 The pre-release 0.1.0 code supports Calibre schema version 27. The
-compatibility test has passed against Calibre 9.10.0 on Linux.
+compatibility test has passed against Calibre 9.10.0 and 9.11.0 on Linux.
 
 The first milestone provides:
 
