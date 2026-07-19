@@ -560,6 +560,12 @@ impl Books {
             .inner
             .root
             .join(format!(".calibre-rs-delete-{}", uuid::Uuid::new_v4()));
+        let mut connection = self.inner.write_connection("permanently delete book")?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                database_error("begin book-delete transaction", &self.inner.database, error)
+            })?;
         let staged_directory = if directory.exists() {
             fs::rename(&directory, &staged).map_err(|source| {
                 crate::error::io_error("stage book deletion", &directory, source)
@@ -568,12 +574,6 @@ impl Books {
         } else {
             false
         };
-        let mut connection = self.inner.write_connection("permanently delete book")?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| {
-                database_error("begin book-delete transaction", &self.inner.database, error)
-            })?;
         let result = transaction
             .execute("DELETE FROM books WHERE id = ?1", [id.get()])
             .and_then(|changed| {

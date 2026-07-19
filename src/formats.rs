@@ -112,11 +112,6 @@ impl Formats {
         let format = crate::paths::format_name(format.as_ref())?;
         let _guard = self.inner.lock_writer("remove format")?;
         let path = self.path(book, &format)?;
-        let mut replacement = if path.exists() {
-            Some(AssetReplacement::stage_removal(&path)?)
-        } else {
-            None
-        };
         let mut connection = self.inner.write_connection("remove format")?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -127,6 +122,11 @@ impl Formats {
                     error,
                 )
             })?;
+        let mut replacement = if path.exists() {
+            Some(AssetReplacement::stage_removal(&path)?)
+        } else {
+            None
+        };
         let result = transaction
             .execute(
                 "DELETE FROM data WHERE book = ?1 AND format = ?2 COLLATE NOCASE",
@@ -218,6 +218,10 @@ impl Formats {
                 })
         };
         let destination = directory.join(format!("{stem}.{}", format.to_ascii_lowercase()));
+        let source_size = fs::metadata(source)
+            .map_err(|error| crate::error::io_error("inspect source format", source, error))?
+            .len();
+        let source_size = crate::books::i64_size(source_size)?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| {
@@ -228,17 +232,12 @@ impl Formats {
                 )
             })?;
         let replacement = AssetReplacement::install(source, &destination)?;
-        let size = fs::metadata(&destination)
-            .map_err(|error| {
-                crate::error::io_error("inspect installed format", &destination, error)
-            })?
-            .len();
         let result = transaction
             .execute(
                 "INSERT INTO data(book, format, uncompressed_size, name) VALUES (?1, ?2, ?3, ?4) \
                  ON CONFLICT(book, format) DO UPDATE SET \
                  uncompressed_size = excluded.uncompressed_size, name = excluded.name",
-                params![book.get(), format, crate::books::i64_size(size)?, stem],
+                params![book.get(), format, source_size, stem],
             )
             .and_then(|_| mark_format_changed(&transaction, book))
             .and_then(|()| transaction.commit())

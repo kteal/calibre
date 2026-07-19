@@ -66,7 +66,6 @@ impl Covers {
             });
         }
         let destination = directory.join("cover.jpg");
-        let replacement = AssetReplacement::install(source.as_ref(), &destination)?;
         let mut connection = self.inner.write_connection("replace cover")?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -77,6 +76,7 @@ impl Covers {
                     error,
                 )
             })?;
+        let replacement = AssetReplacement::install(source.as_ref(), &destination)?;
         let result = transaction
             .execute("UPDATE books SET has_cover = 1 WHERE id = ?1", [book.get()])
             .and_then(|changed| {
@@ -112,11 +112,6 @@ impl Covers {
         let Some(path) = self.path(book)? else {
             return Ok(false);
         };
-        let mut replacement = if path.exists() {
-            Some(AssetReplacement::stage_removal(&path)?)
-        } else {
-            None
-        };
         let mut connection = self.inner.write_connection("remove cover")?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -127,6 +122,11 @@ impl Covers {
                     error,
                 )
             })?;
+        let mut replacement = if path.exists() {
+            Some(AssetReplacement::stage_removal(&path)?)
+        } else {
+            None
+        };
         let result = transaction
             .execute("UPDATE books SET has_cover = 0 WHERE id = ?1", [book.get()])
             .and_then(|changed| {

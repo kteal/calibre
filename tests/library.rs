@@ -188,6 +188,79 @@ fn add_failure_rolls_back_database_and_staged_files() {
 }
 
 #[test]
+fn format_replacement_failure_restores_old_bytes() {
+    let fixture = support::TestLibrary::new();
+    let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+        .expect("open writable");
+    let book = library
+        .books()
+        .add(NewBook {
+            title: "Format rollback".into(),
+            authors: vec!["Tester".into()],
+            formats: vec![FormatFile::new("tests/fixtures/sample.txt")],
+            ..NewBook::default()
+        })
+        .expect("add");
+    let connection = rusqlite::Connection::open(fixture.database()).expect("open db");
+    connection
+        .execute("DROP TABLE metadata_dirtied", [])
+        .expect("inject dirty-state failure");
+    drop(connection);
+
+    assert!(
+        library
+            .formats()
+            .replace(book.id, "tests/fixtures/replacement.txt")
+            .is_err()
+    );
+    assert_eq!(
+        library.formats().read(book.id, "TXT").expect("old bytes"),
+        include_bytes!("fixtures/sample.txt")
+    );
+}
+
+#[test]
+fn cover_replacement_failure_restores_old_bytes() {
+    let fixture = support::TestLibrary::new();
+    let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+        .expect("open writable");
+    let book = library
+        .books()
+        .add(NewBook {
+            title: "Cover rollback".into(),
+            authors: vec!["Tester".into()],
+            cover: Some("tests/fixtures/cover.jpg".into()),
+            ..NewBook::default()
+        })
+        .expect("add");
+    let original = library
+        .covers()
+        .read(book.id)
+        .expect("read cover")
+        .expect("cover");
+    let connection = rusqlite::Connection::open(fixture.database()).expect("open db");
+    connection
+        .execute("DROP TABLE metadata_dirtied", [])
+        .expect("inject dirty-state failure");
+    drop(connection);
+
+    assert!(
+        library
+            .covers()
+            .replace(book.id, "tests/fixtures/replacement.txt")
+            .is_err()
+    );
+    assert_eq!(
+        library
+            .covers()
+            .read(book.id)
+            .expect("read restored cover")
+            .expect("cover"),
+        original
+    );
+}
+
+#[test]
 fn pagination_is_stable_and_concurrent_reads_work() {
     let fixture = support::TestLibrary::new();
     let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
