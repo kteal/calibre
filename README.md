@@ -1,6 +1,7 @@
 # calibre
 
 [![CI](https://github.com/kteal/calibre/actions/workflows/ci.yml/badge.svg)](https://github.com/kteal/calibre/actions/workflows/ci.yml)
+[![Documentation](https://github.com/kteal/calibre/actions/workflows/docs.yml/badge.svg)](https://kteal.github.io/calibre/)
 [![Nix Flake](https://github.com/kteal/calibre/actions/workflows/nix.yml/badge.svg)](https://github.com/kteal/calibre/actions/workflows/nix.yml)
 [![Dependencies](https://github.com/kteal/calibre/actions/workflows/security.yml/badge.svg)](https://github.com/kteal/calibre/actions/workflows/security.yml)
 [![Rust 2024](https://img.shields.io/badge/Rust-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
