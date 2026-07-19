@@ -480,12 +480,16 @@ fn remove_journal(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn sync_directory(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        fs::File::open(path)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|source| crate::error::io_error("sync recovery directory", path, source))?;
-    }
+    fs::File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| crate::error::io_error("sync recovery directory", path, source))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // Keeps fallible call sites shared with the Unix implementation.
+const fn sync_directory(_path: &Path) -> Result<()> {
     Ok(())
 }
