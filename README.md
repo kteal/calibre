@@ -10,26 +10,31 @@ project or its maintainers.
 
 ## Status
 
-Version 0.1.0 supports Calibre schema version 27. The compatibility test has
-passed against Calibre 9.10.0 on Linux.
+The pre-release 0.1.0 code supports Calibre schema version 27. The
+compatibility test has passed against Calibre 9.10.0 on Linux.
 
 The first milestone provides:
 
 - read-only and read-write opening with schema and application-ID validation;
 - capability reporting;
-- stable book listing, title filtering, sorting, pagination, and full core
+- composable book filters, multi-column sorting, pagination, and full core
   metadata loading;
 - checked format and cover paths with traversal and symlink containment;
 - book creation and core metadata updates;
-- staged format and cover add, replace, read, copy, and removal;
+- staged and streaming format and cover add, replace, read, copy, and removal;
 - compensated directory moves after title or first-author changes;
+- read-only library audits for database, format, cover, and path disagreement;
+- read-only custom-column discovery and stored-value access;
+- durable recovery for interrupted book creation and permanent removal;
 - explicit permanent book deletion for libraries without active custom columns
   or full-text-search state.
 
 Calibre-compatible trash, locale-aware sort generation, exact filename parity,
-custom columns, preferences, notes, annotations, and FTS maintenance remain
-unsupported. The crate refuses operations whose deferred state it cannot update.
-Read [compatibility.md](docs/compatibility.md) before writing a library.
+custom-column writes, preferences, notes, annotations, and FTS maintenance
+remain unsupported. Composite custom-column values require Calibre's template
+engine and return `CustomColumnValue::Unavailable`. The crate refuses
+operations whose deferred state it cannot update. Read
+[compatibility.md](docs/compatibility.md) before writing a library.
 
 ## Example
 
@@ -57,8 +62,8 @@ fn main() -> Result<(), calibre::Error> {
 }
 ```
 
-The API is synchronous. Call it from your async runtime's blocking-worker
-facility.
+The API is synchronous. Async applications should call it from a
+blocking-worker thread.
 
 ## Safety and coordination
 
@@ -66,8 +71,13 @@ Do not let Calibre and a Rust process write the same library at the same time.
 The crate serializes its own writers and uses SQLite transactions, but it does
 not share Calibre's in-process lock.
 
-Write tests create a new temporary library. The test suite does not modify a
-library outside its temporary directory.
+Book creation and permanent deletion write a recovery record before changing
+the filesystem. If `capabilities().recovery_required` is true, inspect
+`pending_recovery()`, call `recover_pending()` from a read-write handle, and
+reopen the library. Format replacement, cover replacement, and directory moves
+have in-process compensation but no durable crash journal yet.
+
+Write tests create a new temporary library and stay inside that directory.
 
 ## MSRV
 

@@ -12,16 +12,20 @@ Acceptance:
 
 Status: implemented. Exact sort and filename parity remains a documented gap.
 
-## 0.2: crash recovery and trash
+## Next 0.1 batch: complete crash recovery and trash
 
 Acceptance:
 
-- persist a recovery journal for database/filesystem operations;
+- extend the recovery journal from book add and removal to formats, covers, and
+  directory moves;
 - inject process interruption at each boundary and recover on next open;
 - match Calibre's book and format trash layout;
 - restore and expire trash through paired Calibre/Rust tests.
 
-## 0.3: schema and platform matrix
+Current status: book add and permanent removal have durable recovery. Asset
+replacement and directory moves retain in-process compensation.
+
+## Later 0.1 batch: schema and platform matrix
 
 Acceptance:
 
@@ -30,17 +34,20 @@ Acceptance:
 - black-box filename corpus on Linux, macOS, and Windows;
 - case-only moves, reserved names, long paths, and non-UTF-8 Unix roots.
 
-## 0.4: dynamic library state
+## Later 0.1 batch: dynamic library state
 
 Acceptance:
 
-- discover and validate custom-column table identifiers;
-- read and write supported custom-column types;
+- write supported custom-column types and definitions;
 - clean custom links during deletion;
 - maintain preferences, plugin data, and conversion options without exposing
   SQLite types.
 
-## 0.5: notes, annotations, and FTS
+Current status: the crate discovers active definitions, validates numeric
+dynamic table names and columns, and reads stored scalar and normalized values.
+It does not evaluate composite templates.
+
+## Later 0.1 batch: notes, annotations, and FTS
 
 Acceptance:
 

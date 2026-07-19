@@ -2,7 +2,7 @@
 
 ## Supported policy
 
-Release 0.1.0 opens libraries with:
+The pre-release 0.1.0 code opens libraries with:
 
 - `PRAGMA user_version = 27`;
 - `PRAGMA application_id = 0x63616c69`;
@@ -13,8 +13,9 @@ databases in both modes. Future releases may add read-only support for other
 versions after fixtures prove each schema shape.
 
 Calibre 9.10.0 on Linux passed the create, Rust read, Rust write, Calibre reopen,
-Calibre write, Rust reopen cycle. Calibre 9.11.0 documentation and source tag
-informed research, but no 9.11.0 executable test has run.
+Calibre write, Rust reopen cycle again on 2026-07-19. Calibre 9.11.0
+documentation and source tag informed research, but no 9.11.0 executable test
+has run.
 
 ## Implemented operations
 
@@ -22,18 +23,24 @@ informed research, but no 9.11.0 executable test has run.
 |---|---|---|
 | Open | Supported | Existing schema-27 libraries only |
 | Read core metadata | Supported | Required schema signature must match |
-| Query and pagination | Supported | Stored sort values, stable ID tie break |
+| Query and pagination | Supported | Composable AND filters, multi-sort, stable ID tie break |
 | Resolve assets | Supported | Rejects traversal and escaping symlinks |
 | Add book | Supported with gaps | Conservative English sort and filename generation |
 | Update core metadata | Supported with gaps | Moves directory for title or first-author changes |
-| Formats | Supported | Disabled when `full-text-search.db` exists |
-| Covers | Supported | `cover.jpg` and `has_cover` kept together |
+| Formats | Supported | Path and streaming I/O; writes disabled with FTS |
+| Covers | Supported | Path and streaming I/O; `cover.jpg` and flag kept together |
+| Read-only audit | Supported | SQLite quick check and core asset agreement |
+| Read custom columns | Partial | Stored scalar and normalized values; no template evaluation |
+| Write custom columns | Unsupported | Definition and value mutation are refused |
+| Recovery | Partial | Durable for book add and permanent removal |
 | Permanent book removal | Conditional | Disabled with FTS or active custom columns |
 | Calibre trash | Unsupported | Returns `UnsupportedOperation` |
 
 Read paths use the `data.name` stem from `metadata.db`. The crate reports both
 the stored format size and the filesystem size. A missing file produces
-`file_size = None`; read and copy operations return an I/O error.
+`file_size = None`; read and copy operations return an I/O error. The audit API
+reports missing files, size mismatches, cover-flag mismatches, unsafe paths, and
+SQLite quick-check failures without changing the library.
 
 ## Known gaps
 
@@ -50,6 +57,12 @@ Format and book changes do not update Calibre's FTS side database. Capability
 checks refuse affected operations when that file exists. Permanent deletion
 also refuses active custom columns because Calibre installs cleanup state that
 this crate does not reproduce.
+
+Custom-column reads validate numeric table identifiers and expected table
+columns before building dynamic SQL. The API reads text, comments, series,
+ratings, timestamps, booleans, integers, floats, and enumerations. Composite
+columns return `Unavailable` because they require Calibre's template evaluator.
+The crate does not parse the raw JSON display configuration.
 
 The crate marks `metadata_dirtied`, updates `last_modified`, and requests page
 recount after format changes. Calibre writes `metadata.opf` when it processes
@@ -71,5 +84,11 @@ stages the directory inside the library root. On ordinary errors, the crate
 restores staged files or directories.
 
 SQLite and a filesystem do not provide one shared transaction. A process or
-machine crash can interrupt compensation. The roadmap requires a recovery
-journal before the crate claims crash-safe cross-resource writes.
+machine crash can interrupt compensation. Book creation and permanent removal
+write journals under `.calibre-rs/recovery` before filesystem changes. Pending
+journals disable write capabilities. `recover_pending()` consults the book row
+to remove an orphan, restore a staged removal, or finish a committed removal.
+
+Format and cover replacement and title or first-author directory moves do not
+write durable journals. The crate does not claim crash recovery for those
+operations.

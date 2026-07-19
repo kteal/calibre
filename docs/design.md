@@ -53,11 +53,32 @@ separators.
 
 ## Public API shape
 
-The public surface is split into handles obtained from `Library`: books,
-formats, and covers. Public values contain owned Rust and standard-library
-types; SQLite types remain private. Identifier newtypes prevent mixing entity
-IDs. Input structs are non-exhaustive and have defaults so fields can be added
-without breaking callers.
+`Library` supplies handles for books, formats, covers, audits, and custom
+columns. Public values contain owned Rust and standard-library types; SQLite
+types remain private. Identifier newtypes prevent mixing entity IDs. Input
+structs are non-exhaustive and have defaults so fields can be added without
+breaking callers.
 
 The API is synchronous and has no async runtime dependency. Async applications
 should run library calls on their runtime's blocking-worker facility.
+
+## ADR-0002: durable book-operation recovery
+
+Status: accepted for pre-release 0.1.0.
+
+Book creation and permanent removal create a versioned journal under
+`.calibre-rs/recovery` before changing a book directory. The crate syncs the
+journal file and, on Unix, its directory. Normal completion removes and syncs
+the record. A pending record blocks other writes.
+
+Recovery uses book-row existence as the decision point. An absent row after an
+interrupted add makes the new directory an orphan, so recovery removes it. A
+present row after an interrupted removal makes the staged directory live data,
+so recovery restores it. An absent row lets recovery finish deleting the
+staged directory.
+
+This decision rule cannot resolve every asset replacement. A cover replacement
+can leave the same database flag before and after the operation, for example.
+Format and cover replacement and book-directory moves keep their in-process
+compensation until the journal records enough old and new state to resolve each
+crash boundary.

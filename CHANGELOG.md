@@ -4,15 +4,18 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-07-18
-
 - Open and validate schema-27 Calibre libraries in read-only or read-write mode.
 - Report schema compatibility and operation capabilities.
 - Query and load books with core relationships, formats, sizes, and cover paths.
+- Compose relationship, identifier, format, rating, and cover filters with
+  stable multi-column sorting.
 - Add and update books with compensated filesystem moves.
-- Add, replace, retrieve, copy, and remove formats and covers.
+- Add, replace, retrieve, copy, stream, and remove formats and covers.
+- Audit database integrity and core filesystem agreement without mutation.
+- Discover custom-column definitions and read scalar and normalized values.
+- Recover interrupted book additions and permanent removals from durable
+  journals.
 - Permanently delete books when no unsupported deferred state is active.
 - Add disposable integration, property, and Calibre oracle tests.
 
-[Unreleased]: https://github.com/kteal/calibre/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/kteal/calibre/releases/tag/v0.1.0
+[Unreleased]: https://github.com/kteal/calibre/compare/8067b0f...HEAD

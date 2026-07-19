@@ -35,6 +35,15 @@ established author link order, uppercase logical formats, lowercase physical
 extensions, `cover.jpg`, title/first-author directory moves, and Calibre reopen
 behavior.
 
+Research on 2026-07-19 used the public database API documentation for
+multi-column sorting and field access. Independent inspection of a disposable
+schema-27 database established the `custom_columns` definition shape and the
+numeric `custom_column_N` and `books_custom_column_N_link` table patterns.
+Inspection covered text, comments, series, rating, datetime, boolean, integer,
+float, enumeration, and composite definitions. No Calibre query,
+trigger, template evaluator, or custom-column implementation entered this
+crate.
+
 The implementation registers independent `uuid4` and conservative `title_sort`
 SQLite functions because existing Calibre triggers call functions with those
 names. It does not reproduce Calibre's locale-aware algorithms.
