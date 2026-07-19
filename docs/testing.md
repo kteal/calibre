@@ -19,9 +19,12 @@ Unit tests cover path validation and sanitization properties. Integration tests
 build a fresh schema-27 library for each case. They cover open modes, schema
 rejection, full metadata, rich queries, concurrent reads, streaming assets,
 read-only audits, custom-column reads, staged-write rollback, directory moves,
-permanent deletion, recovery journals, and Unix symlink escape. Recovery tests
-construct interrupted format, cover, and directory-move states on both sides
-of the database commit, then verify rollback or roll-forward behavior.
+permanent deletion, Calibre trash, recovery journals, and Unix symlink escape.
+Trash tests cover Unicode listing metadata, format collisions, whole-book core
+metadata, copy and restore, explicit deletion, expiry, deferred-state refusal,
+and transaction failure. Recovery tests construct interrupted format, cover,
+trash, and directory-move states on both sides of the database commit, then
+verify rollback or roll-forward behavior.
 
 Property tests generate Unicode titles and metadata updates, then verify
 database and filesystem round trips.
@@ -41,6 +44,9 @@ The test performs this cycle in a temporary directory:
 2. Rust reads it and adds a book.
 3. Calibre runs `check_library` and changes metadata.
 4. Rust reopens the library and reads Calibre's change.
+5. Rust trashes a format and Calibre restores it.
+6. Calibre trashes a book and Rust restores it.
+7. Rust trashes that book and Calibre restores it.
 
 Record the command output and Calibre version in `docs/compatibility.md` before
 claiming support for a release or platform.
@@ -56,7 +62,8 @@ licensing review described in `docs/provenance.md`.
 
 ## Remaining coverage
 
-The roadmap tracks Windows path edge cases, macOS case behavior, Calibre trash,
-multiple Calibre versions, active FTS, and custom-column writes and cleanup. CI
-runs the Rust test suite on Linux, macOS, and Windows. Developers run the
-Calibre oracle test before recording compatibility with a Calibre release.
+The roadmap tracks Windows path edge cases, macOS case behavior, multiple
+Calibre versions, active FTS, preference-backed trash expiry, and custom-column
+writes and cleanup. CI runs the Rust test suite on Linux, macOS, and Windows.
+Developers run the Calibre oracle test before recording compatibility with a
+Calibre release.

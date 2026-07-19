@@ -1,5 +1,6 @@
 use crate::{
     Auditor, Books, Covers, CustomColumns, Error, Formats, RecoveryEntry, RecoveryReport, Result,
+    Trash,
 };
 use rusqlite::{Connection, OpenFlags, functions::FunctionFlags};
 use std::collections::BTreeSet;
@@ -89,7 +90,7 @@ pub struct Capabilities {
     pub write_covers: bool,
     /// Permanent deletion is available for libraries without deferred state.
     pub permanent_delete: bool,
-    /// Calibre-compatible trash is available.
+    /// Calibre-compatible trash writes are available.
     pub calibre_trash: bool,
     /// Custom-column definitions and stored values can be read.
     pub read_custom_columns: bool,
@@ -196,7 +197,7 @@ impl Library {
                     write_formats: writable && !fts_state,
                     write_covers: writable,
                     permanent_delete: writable && !fts_state && !custom_columns,
-                    calibre_trash: false,
+                    calibre_trash: writable && !fts_state && !custom_columns,
                     read_custom_columns: true,
                     write_custom_columns: false,
                     recovery_required,
@@ -246,6 +247,12 @@ impl Library {
     #[must_use]
     pub fn covers(&self) -> Covers {
         Covers::new(Arc::clone(&self.inner))
+    }
+
+    /// Returns Calibre trash operations.
+    #[must_use]
+    pub fn trash(&self) -> Trash {
+        Trash::new(Arc::clone(&self.inner))
     }
 
     /// Returns read-only consistency checks.

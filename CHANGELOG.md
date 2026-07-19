@@ -15,6 +15,10 @@ This project follows Semantic Versioning.
 - Discover custom-column definitions and read scalar and normalized values.
 - Recover interrupted book, format, cover, and directory-move writes from
   durable versioned journals.
+- List, copy, restore, delete, and expire Calibre-compatible whole-book and
+  format trash, with durable recovery for trash moves.
+- Make format removal use Calibre trash by default and add explicit permanent
+  format removal.
 - Permanently delete books when no unsupported deferred state is active.
 - Add disposable integration, property, and Calibre oracle tests.
 

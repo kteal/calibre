@@ -25,6 +25,8 @@ pub enum RecoveryOperation {
     CoverChange,
     /// A book-directory and format-filename move.
     BookMove,
+    /// A book or format moving into or out of Calibre's trash.
+    TrashChange,
 }
 
 impl RecoveryOperation {
@@ -32,7 +34,7 @@ impl RecoveryOperation {
         match self {
             Self::BookAdd => "book-add",
             Self::PermanentBookRemoval => "book-remove",
-            Self::FormatChange | Self::CoverChange | Self::BookMove => {
+            Self::FormatChange | Self::CoverChange | Self::BookMove | Self::TrashChange => {
                 unreachable!("new operations use version-2 journals")
             }
         }
@@ -234,6 +236,33 @@ impl RecoveryJournal {
         begin_v2(root, book, OperationV2::BookMove(record))
     }
 
+    #[allow(clippy::too_many_arguments)] // Recovery needs both paths, direction, kind, and listing state.
+    pub(crate) fn begin_trash_change(
+        root: &Path,
+        book: BookId,
+        live: &Path,
+        trash: &Path,
+        previous: Option<&Path>,
+        direction: TrashDirection,
+        kind: TrashAssetKind,
+        listing: Option<(&str, &[String])>,
+    ) -> Result<Self> {
+        let record = TrashRecord {
+            direction,
+            kind,
+            live: encode_root_path(root, live)?,
+            trash: encode_root_path(root, trash)?,
+            previous: previous
+                .map(|path| encode_root_path(root, path))
+                .transpose()?,
+            listing: listing.map(|(title, authors)| TrashListingRecord {
+                title: title.to_owned(),
+                authors: authors.to_vec(),
+            }),
+        };
+        begin_v2(root, book, OperationV2::Trash(record))
+    }
+
     pub(crate) fn mark_format_ready(&mut self, size: i64) -> Result<()> {
         let path = self.path.clone();
         let record = self.v2_record_mut("mark format journal ready")?;
@@ -301,6 +330,37 @@ struct JournalV2 {
 enum OperationV2 {
     Asset(AssetRecord),
     BookMove(BookMoveRecord),
+    Trash(TrashRecord),
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum TrashDirection {
+    ToTrash,
+    FromTrash,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "asset", rename_all = "kebab-case")]
+pub(crate) enum TrashAssetKind {
+    Book,
+    Format { format: String },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct TrashRecord {
+    direction: TrashDirection,
+    kind: TrashAssetKind,
+    live: String,
+    trash: String,
+    previous: Option<String>,
+    listing: Option<TrashListingRecord>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct TrashListingRecord {
+    title: String,
+    authors: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -421,6 +481,9 @@ pub(crate) fn recover(inner: &LibraryInner) -> Result<RecoveryReport> {
                 }
                 OperationV2::BookMove(book_move) => {
                     recover_book_move(inner, &mut connection, &record, book_move)?;
+                }
+                OperationV2::Trash(trash) => {
+                    recover_trash(inner, &connection, &record, trash)?;
                 }
             },
         }
@@ -944,6 +1007,165 @@ fn recover_book_move(
     Ok(())
 }
 
+fn recover_trash(
+    inner: &LibraryInner,
+    connection: &rusqlite::Connection,
+    parsed: &ParsedJournal,
+    record: &TrashRecord,
+) -> Result<()> {
+    let database_present = match &record.kind {
+        TrashAssetKind::Book => book_exists(connection, inner, parsed.entry.book_id)?,
+        TrashAssetKind::Format { format } => connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM data WHERE book = ?1 AND format = ?2 COLLATE NOCASE)",
+                params![parsed.entry.book_id.get(), format],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                crate::library::database_error(
+                    "inspect interrupted trash format",
+                    &inner.database,
+                    error,
+                )
+            })?,
+    };
+    let live = decode_root_path(&inner.root, &record.live, &parsed.journal_path)?;
+    let trash = decode_root_path(&inner.root, &record.trash, &parsed.journal_path)?;
+    let previous = record
+        .previous
+        .as_deref()
+        .map(|path| decode_root_path(&inner.root, path, &parsed.journal_path))
+        .transpose()?;
+    reconcile_trash_paths(&live, &trash, previous.as_deref(), record, database_present)?;
+    if !database_present
+        && record.direction == TrashDirection::ToTrash
+        && matches!(record.kind, TrashAssetKind::Format { .. })
+    {
+        let listing = record
+            .listing
+            .as_ref()
+            .ok_or_else(|| Error::InvalidLibrary {
+                path: parsed.journal_path.clone(),
+                reason: "format trash recovery record has no listing metadata".into(),
+            })?;
+        let directory = trash.parent().ok_or_else(|| Error::InvalidLibrary {
+            path: parsed.journal_path.clone(),
+            reason: "format trash recovery path has no parent".into(),
+        })?;
+        crate::trash::write_format_metadata_values(directory, &listing.title, &listing.authors)?;
+    }
+    Ok(())
+}
+
+fn reconcile_trash_paths(
+    live: &Path,
+    trash: &Path,
+    previous: Option<&Path>,
+    record: &TrashRecord,
+    database_present: bool,
+) -> Result<()> {
+    let live_exists = path_exists(live)?;
+    let trash_exists = path_exists(trash)?;
+    let previous_exists = previous.map(path_exists).transpose()?.unwrap_or(false);
+
+    if database_present {
+        if record.direction == TrashDirection::FromTrash && live_exists && trash_exists {
+            return Err(ambiguous_paths_error(
+                "recover trash restoration",
+                live,
+                trash,
+            ));
+        }
+        if live_exists {
+            ensure_trash_asset(live, &record.kind, "verify recovered live asset")?;
+        } else {
+            if !trash_exists {
+                return Err(Error::UnsupportedOperation {
+                    operation: "recover trash change",
+                    reason: "database state requires a live asset, but no recoverable copy exists"
+                        .into(),
+                });
+            }
+            ensure_trash_asset(trash, &record.kind, "recover live trash asset")?;
+            create_parent(live, "create recovered live parent")?;
+            fs::rename(trash, live).map_err(|source| {
+                crate::error::io_error("restore live asset from trash", trash, source)
+            })?;
+        }
+        if previous_exists {
+            let previous = previous.ok_or_else(|| Error::InvalidLibrary {
+                path: trash.to_path_buf(),
+                reason: "previous trash entry exists without a recorded path".into(),
+            })?;
+            if path_exists(trash)? {
+                return Err(ambiguous_paths_error(
+                    "restore previous trash entry",
+                    trash,
+                    previous,
+                ));
+            }
+            ensure_trash_asset(previous, &record.kind, "verify previous trash entry")?;
+            fs::rename(previous, trash).map_err(|source| {
+                crate::error::io_error("restore previous trash entry", previous, source)
+            })?;
+        }
+    } else {
+        if live_exists && trash_exists {
+            return Err(ambiguous_paths_error("finish trash change", live, trash));
+        }
+        if trash_exists {
+            ensure_trash_asset(trash, &record.kind, "verify recovered trash asset")?;
+        } else {
+            if !live_exists {
+                return Err(Error::UnsupportedOperation {
+                    operation: "recover trash change",
+                    reason: "database state requires a trash asset, but no recoverable copy exists"
+                        .into(),
+                });
+            }
+            ensure_trash_asset(live, &record.kind, "recover trash asset")?;
+            create_parent(trash, "create recovered trash parent")?;
+            fs::rename(live, trash).map_err(|source| {
+                crate::error::io_error("finish moving asset to trash", live, source)
+            })?;
+        }
+        if previous_exists {
+            let previous = previous.ok_or_else(|| Error::InvalidLibrary {
+                path: trash.to_path_buf(),
+                reason: "previous trash entry exists without a recorded path".into(),
+            })?;
+            remove_trash_asset(previous, &record.kind, "remove superseded trash entry")?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_trash_asset(path: &Path, kind: &TrashAssetKind, operation: &'static str) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|source| crate::error::io_error(operation, path, source))?;
+    let expected = match kind {
+        TrashAssetKind::Book => metadata.is_dir() && !metadata.file_type().is_symlink(),
+        TrashAssetKind::Format { .. } => metadata.is_file() && !metadata.file_type().is_symlink(),
+    };
+    if expected {
+        Ok(())
+    } else {
+        Err(Error::InvalidLibrary {
+            path: path.to_path_buf(),
+            reason: "recovery trash asset has an unexpected file type".into(),
+        })
+    }
+}
+
+fn remove_trash_asset(path: &Path, kind: &TrashAssetKind, operation: &'static str) -> Result<()> {
+    ensure_trash_asset(path, kind, operation)?;
+    match kind {
+        TrashAssetKind::Book => fs::remove_dir_all(path),
+        TrashAssetKind::Format { .. } => fs::remove_file(path),
+    }
+    .map_err(|source| crate::error::io_error(operation, path, source))
+}
+
 fn reconcile_book_move_files(
     inner: &LibraryInner,
     record: &BookMoveRecord,
@@ -1221,7 +1443,8 @@ fn parse_v1(root: &Path, path: PathBuf, contents: &[u8]) -> Result<ParsedJournal
         }
         RecoveryOperation::FormatChange
         | RecoveryOperation::CoverChange
-        | RecoveryOperation::BookMove => {
+        | RecoveryOperation::BookMove
+        | RecoveryOperation::TrashChange => {
             return Err(Error::InvalidLibrary {
                 path,
                 reason: "version-1 journal contains a version-2 operation".into(),
@@ -1267,6 +1490,13 @@ fn parse_v2(root: &Path, path: PathBuf, contents: &[u8]) -> Result<ParsedJournal
             (
                 RecoveryOperation::BookMove,
                 decode_path(&book_move.old_directory, &path)?,
+            )
+        }
+        OperationV2::Trash(trash) => {
+            validate_trash_record(root, &path, book_id, trash)?;
+            (
+                RecoveryOperation::TrashChange,
+                decode_path(&trash.live, &path)?,
             )
         }
     };
@@ -1330,6 +1560,69 @@ fn validate_book_move_record(root: &Path, journal: &Path, record: &BookMoveRecor
         let new = decode_path(&rename.new_name, journal)?;
         validate_filename(&old)?;
         validate_filename(&new)?;
+    }
+    Ok(())
+}
+
+fn validate_trash_record(
+    root: &Path,
+    journal: &Path,
+    book: BookId,
+    record: &TrashRecord,
+) -> Result<()> {
+    let live = decode_root_path(root, &record.live, journal)?;
+    let trash = decode_root_path(root, &record.trash, journal)?;
+    if live == trash {
+        return Err(Error::InvalidLibrary {
+            path: journal.to_path_buf(),
+            reason: "trash recovery live and trash paths are identical".into(),
+        });
+    }
+    let expected = match &record.kind {
+        TrashAssetKind::Book => {
+            crate::trash::trash_entry_path(root, crate::TrashEntryKind::Book, book)?
+        }
+        TrashAssetKind::Format { format } => {
+            let normalized = crate::paths::format_name(std::ffi::OsStr::new(format))?;
+            if normalized != *format {
+                return Err(Error::InvalidLibrary {
+                    path: journal.to_path_buf(),
+                    reason: "trash recovery format is not normalized".into(),
+                });
+            }
+            crate::trash::format_trash_path(root, book, format)?
+        }
+    };
+    if trash != expected {
+        return Err(Error::InvalidLibrary {
+            path: journal.to_path_buf(),
+            reason: "trash recovery destination does not match its book and asset".into(),
+        });
+    }
+    if let Some(previous) = &record.previous {
+        let previous = decode_root_path(root, previous, journal)?;
+        if previous == live
+            || previous == trash
+            || previous.parent() != trash.parent()
+            || !previous
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|name| name.starts_with(".calibre-rs-prior-"))
+        {
+            return Err(Error::InvalidLibrary {
+                path: journal.to_path_buf(),
+                reason: "trash recovery previous path is not a private trash sibling".into(),
+            });
+        }
+    }
+    if matches!(record.kind, TrashAssetKind::Format { .. })
+        && record.direction == TrashDirection::ToTrash
+        && record.listing.is_none()
+    {
+        return Err(Error::InvalidLibrary {
+            path: journal.to_path_buf(),
+            reason: "format trash recovery record has no listing metadata".into(),
+        });
     }
     Ok(())
 }

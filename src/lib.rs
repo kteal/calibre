@@ -29,9 +29,11 @@ mod formats;
 mod ids;
 mod library;
 mod model;
+mod opf;
 mod paths;
 mod recovery;
 mod sql;
+mod trash;
 
 pub use audit::{AuditIssue, AuditIssueKind, AuditReport, Auditor};
 pub use books::Books;
@@ -47,3 +49,4 @@ pub use model::{
     SortDirection, Tag, UpdateBook,
 };
 pub use recovery::{RecoveryEntry, RecoveryOperation, RecoveryReport};
+pub use trash::{DEFAULT_TRASH_EXPIRY, Trash, TrashContents, TrashEntry, TrashEntryKind};

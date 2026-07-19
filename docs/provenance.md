@@ -49,6 +49,19 @@ designs. They use database values and filesystem paths that the crate already
 reads or writes. The implementation does not reuse Calibre recovery code,
 algorithms, triggers, or SQL.
 
+Trash research on 2026-07-19 used the public database API and disposable
+Calibre 9.10.0 libraries. Black-box runs established the `.caltrash` directory
+layout, lowercase format names, compact format metadata, directory-mtime
+expiry, replacement behavior, and restoration of original book IDs. Generated
+OPF files supplied metadata-field examples. The crate's OPF reader, writer,
+recovery journal, and SQLite statements are independent work. No Calibre trash
+or OPF implementation entered this crate.
+
+Paired compatibility tests then exercised both directions: Calibre restored
+Rust-created book and format entries, and Rust restored a book removed by
+Calibre. The tests call Calibre only as a development oracle and do not add a
+runtime dependency.
+
 The implementation registers independent `uuid4` and conservative `title_sort`
 SQLite functions because existing Calibre triggers call functions with those
 names. It does not reproduce Calibre's locale-aware algorithms.

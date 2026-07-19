@@ -102,3 +102,35 @@ Version-1 book journals remain readable. New asset and move records use version
 2. Pending records block other writes until `recover_pending()` removes them.
 Normal errors still run compensation and remove the journal after they restore
 the old state.
+
+## ADR-0004: Calibre trash ownership and recovery
+
+Status: accepted for pre-release 0.1.0.
+
+The crate uses Calibre's `.caltrash/b/<book-id>` and
+`.caltrash/f/<book-id>` directories. A book entry contains the former book
+directory and a current `metadata.opf`. A format entry stores each format under
+its lowercase extension and keeps `metadata.json` with the current title and
+authors.
+
+Book and format removal replace an older trash entry with the same ID and
+format. Before replacement, the crate moves the older entry to a private
+temporary sibling. A recovery journal records the live path, trash path, and
+temporary sibling before the first rename. The database row decides whether
+recovery restores the live file or keeps the trash entry.
+
+Book restoration parses core metadata from the OPF file, moves the directory
+back to a checked library path, and recreates the database rows with the
+original book ID and UUID. The crate refuses restoration when the OPF contains
+state it cannot preserve or when a live row or destination path conflicts.
+Format restoration copies bytes into the live book through the durable format
+write path before removing the trash copy.
+
+Whole-book removal is enabled only when active custom columns and FTS are
+absent. It also checks the selected book for annotations, plugin data,
+conversion options, and last-read positions. A matching row makes the
+operation unsupported instead of discarding deferred state.
+
+Trash listing never creates directories in read-only mode. Explicit deletion
+and expiry operate only on numeric entry directories and reject symlinks.
+Expiry compares the directory modification time with a caller-supplied age.

@@ -24,12 +24,26 @@ Status: implemented with version-2 journals and database-directed recovery.
 Tests cover rollback and roll-forward decisions for formats, covers whose
 database flag does not change, and book-directory moves.
 
-## Next 0.1 batch: Calibre trash
+## Completed 0.1 batch: Calibre trash
 
 Acceptance:
 
 - match Calibre's book and format trash layout;
 - restore and expire trash through paired Calibre/Rust tests.
+
+Status: implemented for core metadata. Format removal defaults to Calibre
+trash, with explicit permanent removal available. Whole-book operations refuse
+custom columns, FTS, annotations, plugin data, conversion options, and
+last-read state when the crate cannot preserve them.
+
+## Next 0.1 batch: preferences and library state
+
+Acceptance:
+
+- typed read and write access to Calibre preferences without exposing JSON or
+  SQLite schema details;
+- use the configured trash expiry age and preserve the hourly expiry marker;
+- round-trip library-level preferences through paired Calibre/Rust tests.
 
 ## Later 0.1 batch: schema and platform matrix
 
@@ -64,7 +78,8 @@ Acceptance:
 
 ## Deferred
 
-Library creation, OPF backup generation, library restore, and proven
-cross-process coordination remain deferred. The ebook reader, editor,
+Library creation, full active-library OPF backup generation, whole-library
+restore, and proven cross-process coordination remain deferred. The ebook
+reader, editor,
 conversion engine, plugin runtime, content server, and device drivers stay out
 of scope.

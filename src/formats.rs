@@ -1,5 +1,5 @@
 use crate::library::{LibraryInner, database_error};
-use crate::{BookId, Error, Format, Result};
+use crate::{BookId, DeletionMode, Error, Format, Result};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
@@ -150,13 +150,42 @@ impl Formats {
         self.put_reader(book, format.as_ref(), reader, true)
     }
 
-    /// Removes one format while keeping the logical book.
+    /// Moves one format to Calibre's per-library trash.
     ///
     /// # Errors
     ///
-    /// Returns an error for read-only mode, active FTS state, a missing
-    /// format, an unsafe path, or database/filesystem failure.
+    /// A missing format is a no-op. Returns an error for read-only mode,
+    /// active FTS state, an unsafe path, or database/filesystem failure.
     pub fn remove(&self, book: BookId, format: impl AsRef<OsStr>) -> Result<()> {
+        self.remove_with(book, format, DeletionMode::Trash)
+    }
+
+    /// Removes one format using explicit trash or permanent semantics.
+    ///
+    /// # Errors
+    ///
+    /// A missing format is a no-op. Returns an error for read-only mode,
+    /// active FTS state, an unsafe path, or database/filesystem failure.
+    pub fn remove_with(
+        &self,
+        book: BookId,
+        format: impl AsRef<OsStr>,
+        mode: DeletionMode,
+    ) -> Result<()> {
+        let format = crate::paths::format_name(format.as_ref())?;
+        match mode {
+            DeletionMode::Trash => crate::trash::move_format_to_trash(&self.inner, book, &format),
+            DeletionMode::Permanent => self.remove_permanently(book, OsStr::new(&format)),
+        }
+    }
+
+    /// Permanently removes one format while keeping the logical book.
+    ///
+    /// # Errors
+    ///
+    /// A missing format is a no-op. Returns an error for read-only mode,
+    /// active FTS state, an unsafe path, or database/filesystem failure.
+    pub fn remove_permanently(&self, book: BookId, format: impl AsRef<OsStr>) -> Result<()> {
         if !self.inner.capabilities.write_formats {
             return Err(Error::UnsupportedOperation {
                 operation: "remove format",
@@ -170,14 +199,13 @@ impl Formats {
         }
         .books()
         .get(book)?;
-        let existing = book_value
+        let Some(existing) = book_value
             .formats
             .iter()
             .find(|item| item.format.eq_ignore_ascii_case(&format))
-            .ok_or_else(|| Error::UnsupportedOperation {
-                operation: "remove format",
-                reason: format!("book {book} has no {format} format"),
-            })?;
+        else {
+            return Ok(());
+        };
         let path = existing.path.clone();
         let before_file = regular_file_exists(&path, "remove format")?;
         let backup = asset_sibling_path(&path, "remove");

@@ -13,9 +13,10 @@ databases in both modes. Future releases may add read-only support for other
 versions after fixtures prove each schema shape.
 
 Calibre 9.10.0 on Linux passed the create, Rust read, Rust write, Calibre reopen,
-Calibre write, Rust reopen cycle again on 2026-07-19. Calibre 9.11.0
-documentation and source tag informed research, but no 9.11.0 executable test
-has run.
+Calibre write, Rust reopen cycle again on 2026-07-19. The same executable
+restored Rust-created book and format trash, and Rust restored a
+Calibre-created book-trash entry. Calibre 9.11.0 documentation and source tag
+informed research, but no 9.11.0 executable test has run.
 
 ## Implemented operations
 
@@ -27,14 +28,14 @@ has run.
 | Resolve assets | Supported | Rejects traversal and escaping symlinks |
 | Add book | Supported with gaps | Conservative English sort and filename generation |
 | Update core metadata | Supported with gaps | Moves directory for title or first-author changes |
-| Formats | Supported | Path and streaming I/O; writes disabled with FTS |
+| Formats | Supported | Default removal uses trash; explicit permanent removal is available |
 | Covers | Supported | Path and streaming I/O; `cover.jpg` and flag kept together |
 | Read-only audit | Supported | SQLite quick check and core asset agreement |
 | Read custom columns | Partial | Stored scalar and normalized values; no template evaluation |
 | Write custom columns | Unsupported | Definition and value mutation are refused |
-| Recovery | Supported | Durable for book, format, cover, and directory-move writes |
+| Recovery | Supported | Durable for book, format, cover, directory-move, and trash writes |
 | Permanent book removal | Conditional | Disabled with FTS or active custom columns |
-| Calibre trash | Unsupported | Returns `UnsupportedOperation` |
+| Calibre trash | Conditional | Core book and format entries; disabled with FTS or active custom columns |
 
 Read paths use the `data.name` stem from `metadata.db`. The crate reports both
 the stored format size and the filesystem size. A missing file produces
@@ -57,6 +58,21 @@ Format and book changes do not update Calibre's FTS side database. Capability
 checks refuse affected operations when that file exists. Permanent deletion
 also refuses active custom columns because Calibre installs cleanup state that
 this crate does not reproduce.
+
+Format removal uses `.caltrash/f/<book-id>/<lowercase-format>` and replaces an
+older entry of the same format. Whole-book removal uses
+`.caltrash/b/<book-id>`, writes current core metadata to `metadata.opf`, and
+keeps the complete directory tree. Restoration preserves the original book ID,
+UUID, timestamp, formats, cover, and core relationships. It sets
+`last_modified` to restoration time, as Calibre does.
+
+Whole-book removal refuses a book with annotations, plugin data, conversion
+options, or last-read positions. Restoration refuses custom-column and
+annotation payloads in OPF. Format trash remains safe for core libraries but is
+currently gated by the same conservative `calibre_trash` capability. Trash
+expiry uses the entry-directory mtime and a caller-selected age. The crate
+provides Calibre's fourteen-day default, but does not yet read the
+`expire_old_trash_after` preference or update Calibre's hourly expiry marker.
 
 Custom-column reads validate numeric table identifiers and expected table
 columns before building dynamic SQL. The API reads text, comments, series,
@@ -85,7 +101,9 @@ restores staged files or directories.
 
 SQLite and a filesystem do not provide one shared transaction. Book, format,
 cover, and directory-move writes create journals under
-`.calibre-rs/recovery`. Pending journals disable write capabilities.
+`.calibre-rs/recovery`. Trash changes record both the current entry and a
+superseded collision target before the first rename. Pending journals disable
+write capabilities.
 `recover_pending()` compares the current database state with the journal, then
 completes or reverses the filesystem changes.
 

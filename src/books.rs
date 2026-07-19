@@ -565,10 +565,7 @@ impl Books {
     /// deletion unsafe, the book is missing, or database/filesystem work fails.
     pub fn remove(&self, id: BookId, mode: DeletionMode) -> Result<()> {
         if mode == DeletionMode::Trash {
-            return Err(Error::UnsupportedOperation {
-                operation: "move book to Calibre trash",
-                reason: "Calibre-compatible OPF-backed trash restoration is not implemented".into(),
-            });
+            return crate::trash::move_book_to_trash(&self.inner, id);
         }
         if !self.inner.capabilities.permanent_delete {
             return Err(Error::UnsupportedOperation {
@@ -583,6 +580,7 @@ impl Books {
         let staged_relative = PathBuf::from(format!(".calibre-rs-delete-{}", uuid::Uuid::new_v4()));
         let staged = crate::paths::resolve(&self.inner.root, &staged_relative)?;
         let mut connection = self.inner.write_connection("permanently delete book")?;
+        crate::trash::ensure_no_deferred_book_state(&connection, &self.inner, id)?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| {
@@ -602,13 +600,12 @@ impl Books {
         } else {
             false
         };
-        let result = transaction
-            .execute("DELETE FROM books WHERE id = ?1", [id.get()])
+        let result = crate::sql::delete_core_book(&transaction, id)
             .and_then(|changed| {
-                if changed == 0 {
-                    Err(rusqlite::Error::QueryReturnedNoRows)
-                } else {
+                if changed {
                     Ok(())
+                } else {
+                    Err(rusqlite::Error::QueryReturnedNoRows)
                 }
             })
             .and_then(|()| transaction.commit())
@@ -847,7 +844,7 @@ fn validate_languages(languages: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn path_to_database(path: &Path) -> Result<String> {
+pub(crate) fn path_to_database(path: &Path) -> Result<String> {
     let mut components = Vec::new();
     for component in path.components() {
         let std::path::Component::Normal(value) = component else {

@@ -34,14 +34,18 @@ The first milestone provides:
 - read-only custom-column discovery and stored-value access;
 - durable recovery for interrupted book, format, cover, and directory-move
   writes;
+- Calibre-compatible book and format trash listing, copy, restore, deletion,
+  and explicit age-based expiry;
 - explicit permanent book deletion for libraries without active custom columns
   or full-text-search state.
 
-Calibre-compatible trash, locale-aware sort generation, exact filename parity,
-custom-column writes, preferences, notes, annotations, and FTS maintenance
-remain unsupported. Composite custom-column values require Calibre's template
-engine and return `CustomColumnValue::Unavailable`. The crate refuses
-operations whose deferred state it cannot update. Read
+Locale-aware sort generation, exact filename parity, custom-column writes,
+preferences, notes, annotations, and FTS maintenance remain unsupported.
+Whole-book trash refuses books with annotation, plugin, conversion-option, or
+last-read state because core OPF restoration cannot preserve it. Composite
+custom-column values require Calibre's template engine and return
+`CustomColumnValue::Unavailable`. The crate refuses operations whose deferred
+state it cannot update. Read
 [compatibility.md](docs/compatibility.md) before writing a library.
 
 ## Example
@@ -66,6 +70,8 @@ fn main() -> Result<(), calibre::Error> {
     })?;
 
     library.formats().add(book.id, "/tmp/odyssey.pdf")?;
+    library.formats().remove(book.id, "PDF")?;
+    library.trash().restore_format(book.id, "PDF")?;
     Ok(())
 }
 ```
@@ -81,9 +87,9 @@ not share Calibre's in-process lock.
 
 Writes that combine SQLite and filesystem changes create a recovery record
 before changing either side. This covers book creation and removal, format and
-cover changes, and directory moves. If `capabilities().recovery_required` is
-true, inspect `pending_recovery()`, call `recover_pending()` from a read-write
-handle, and reopen the library.
+cover changes, directory moves, and moves into or out of trash. If
+`capabilities().recovery_required` is true, inspect `pending_recovery()`, call
+`recover_pending()` from a read-write handle, and reopen the library.
 
 Recovery compares the current database state with both states recorded in the
 journal. It keeps the journal and returns an error when neither state matches

@@ -484,3 +484,28 @@ pub(crate) fn conservative_author_sort(author: &str) -> String {
         trimmed.to_owned()
     }
 }
+
+pub(crate) fn delete_core_book(
+    transaction: &Transaction<'_>,
+    book: BookId,
+) -> rusqlite::Result<bool> {
+    for table in [
+        "metadata_dirtied",
+        "books_pages_link",
+        "books_authors_link",
+        "books_tags_link",
+        "books_series_link",
+        "books_publishers_link",
+        "books_languages_link",
+        "books_ratings_link",
+        "comments",
+        "identifiers",
+        "data",
+    ] {
+        transaction.execute(
+            &format!("DELETE FROM {table} WHERE book = ?1"),
+            [book.get()],
+        )?;
+    }
+    Ok(transaction.execute("DELETE FROM books WHERE id = ?1", [book.get()])? != 0)
+}

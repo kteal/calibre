@@ -5,7 +5,7 @@ mod support;
 use calibre::{
     AuditIssueKind, BookFilter, BookOrder, BookQuery, BookSort, CustomColumnKind,
     CustomColumnValue, DeletionMode, Error, FormatFile, Library, NewBook, OpenOptions, Rating,
-    SortDirection, UpdateBook,
+    SortDirection, TrashEntryKind, UpdateBook,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -157,6 +157,374 @@ fn complete_book_format_cover_lifecycle() {
         library.books().get(updated.id),
         Err(Error::NotFound { .. })
     ));
+}
+
+#[test]
+fn format_trash_lists_replaces_copies_and_restores() {
+    let fixture = support::TestLibrary::new();
+    let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+        .expect("open writable");
+    assert!(library.capabilities().calibre_trash);
+    let book = library
+        .books()
+        .add(NewBook {
+            title: "Format trash Ω".into(),
+            authors: vec!["First Author".into(), "二番".into()],
+            formats: vec![
+                FormatFile::new("tests/fixtures/sample.txt"),
+                FormatFile::new("tests/fixtures/sample.epub"),
+            ],
+            ..NewBook::default()
+        })
+        .expect("add");
+
+    library.formats().remove(book.id, "txt").expect("trash txt");
+    assert!(library.formats().path(book.id, "TXT").is_err());
+    assert_eq!(
+        library
+            .trash()
+            .read_format(book.id, "TXT")
+            .expect("read trash"),
+        include_bytes!("fixtures/sample.txt")
+    );
+    let listing = library.trash().list().expect("list trash");
+    assert_eq!(listing.formats.len(), 1);
+    assert_eq!(listing.formats[0].title, "Format trash Ω");
+    assert_eq!(listing.formats[0].authors, ["First Author", "二番"]);
+    assert_eq!(listing.formats[0].formats, ["TXT"]);
+    library
+        .formats()
+        .remove(book.id, "TXT")
+        .expect("missing live format is a no-op");
+    assert_eq!(
+        library
+            .trash()
+            .read_format(book.id, "TXT")
+            .expect("trash remains"),
+        include_bytes!("fixtures/sample.txt")
+    );
+
+    let copy = fixture.path().join("trash-copy.txt");
+    library
+        .trash()
+        .copy_format_to(book.id, "TXT", &copy)
+        .expect("copy trash");
+    assert_eq!(
+        std::fs::read(copy).expect("read copy"),
+        include_bytes!("fixtures/sample.txt")
+    );
+
+    let mut replacement = std::io::Cursor::new(include_bytes!("fixtures/replacement.txt"));
+    library
+        .formats()
+        .add_from_reader(book.id, "TXT", &mut replacement)
+        .expect("re-add txt");
+    library
+        .formats()
+        .remove(book.id, "TXT")
+        .expect("replace trashed txt");
+    assert_eq!(
+        library
+            .trash()
+            .read_format(book.id, "txt")
+            .expect("new trash bytes"),
+        include_bytes!("fixtures/replacement.txt")
+    );
+
+    let restored = library
+        .trash()
+        .restore_format(book.id, "txt")
+        .expect("restore txt");
+    assert_eq!(restored.format, "TXT");
+    assert_eq!(
+        library.formats().read(book.id, "TXT").expect("live txt"),
+        include_bytes!("fixtures/replacement.txt")
+    );
+    assert!(
+        library
+            .trash()
+            .list()
+            .expect("empty format trash")
+            .formats
+            .is_empty()
+    );
+
+    library
+        .formats()
+        .remove_permanently(book.id, "EPUB")
+        .expect("permanent format removal");
+    assert!(
+        !fixture
+            .path()
+            .join(format!(".caltrash/f/{}/epub", book.id.get()))
+            .exists()
+    );
+}
+
+#[test]
+fn whole_book_trash_round_trips_core_metadata_and_assets() {
+    let fixture = support::TestLibrary::new();
+    let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+        .expect("open writable");
+    let book = library.books().add(populated_input()).expect("add");
+    let original_uuid = book.uuid.clone();
+    let original_timestamp = book.timestamp.clone();
+
+    library
+        .books()
+        .remove(book.id, DeletionMode::Trash)
+        .expect("trash book");
+    assert!(matches!(
+        library.books().get(book.id),
+        Err(Error::NotFound { .. })
+    ));
+    let trash_path = fixture
+        .path()
+        .join(format!(".caltrash/b/{}", book.id.get()));
+    assert!(trash_path.join("metadata.opf").is_file());
+    assert!(trash_path.join("cover.jpg").is_file());
+
+    let listing = library.trash().list().expect("list");
+    assert_eq!(listing.books.len(), 1);
+    assert_eq!(listing.books[0].book_id, book.id);
+    assert_eq!(listing.books[0].title, "The Odyssey λ");
+    assert_eq!(listing.books[0].authors, ["Homer", "Translator"]);
+    assert!(listing.books[0].formats.is_empty());
+
+    let copied = fixture.path().join("copied-book");
+    library
+        .trash()
+        .copy_book_to(book.id, &copied)
+        .expect("copy book tree");
+    assert!(copied.join("metadata.opf").is_file());
+    assert!(copied.join("cover.jpg").is_file());
+
+    let restored = library.trash().restore_book(book.id).expect("restore");
+    assert_eq!(restored.id, book.id);
+    assert_eq!(restored.uuid, original_uuid);
+    assert_eq!(restored.timestamp, original_timestamp);
+    assert_eq!(
+        restored
+            .authors
+            .iter()
+            .map(|author| author.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Homer", "Translator"]
+    );
+    assert_eq!(
+        restored
+            .tags
+            .iter()
+            .map(|tag| tag.name.as_str())
+            .collect::<Vec<_>>(),
+        ["classic", "unicode-λ"]
+    );
+    assert_eq!(restored.series.as_ref().expect("series").name, "Epics");
+    assert_eq!(
+        restored.publisher.as_ref().expect("publisher").name,
+        "Test Press"
+    );
+    assert_eq!(restored.rating.expect("rating").get(), 8);
+    assert_eq!(restored.formats.len(), 2);
+    assert!(restored.cover_path.is_some_and(|path| path.is_file()));
+    assert!(!trash_path.exists());
+}
+
+#[test]
+fn trash_delete_and_zero_age_expiry_are_explicit() {
+    let fixture = support::TestLibrary::new();
+    let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+        .expect("open writable");
+    let first = library
+        .books()
+        .add(NewBook {
+            title: "Delete entry".into(),
+            authors: vec!["Tester".into()],
+            formats: vec![FormatFile::new("tests/fixtures/sample.txt")],
+            ..NewBook::default()
+        })
+        .expect("add first");
+    library
+        .formats()
+        .remove(first.id, "TXT")
+        .expect("trash format");
+    assert!(
+        library
+            .trash()
+            .delete_entry(first.id, TrashEntryKind::Formats)
+            .expect("delete entry")
+    );
+    assert!(
+        !library
+            .trash()
+            .delete_entry(first.id, TrashEntryKind::Formats)
+            .expect("missing entry")
+    );
+
+    let second = library
+        .books()
+        .add(NewBook {
+            title: "Expire entry".into(),
+            authors: vec!["Tester".into()],
+            ..NewBook::default()
+        })
+        .expect("add second");
+    library
+        .books()
+        .remove(second.id, DeletionMode::Trash)
+        .expect("trash book");
+    assert_eq!(
+        library
+            .trash()
+            .expire_older_than(std::time::Duration::ZERO)
+            .expect("empty trash"),
+        1
+    );
+    assert!(library.trash().list().expect("empty").books.is_empty());
+}
+
+#[test]
+fn failed_format_trash_restores_live_and_previous_bytes() {
+    let fixture = support::TestLibrary::new();
+    let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+        .expect("open writable");
+    let book = library
+        .books()
+        .add(NewBook {
+            title: "Trash rollback".into(),
+            authors: vec!["Tester".into()],
+            formats: vec![FormatFile::new("tests/fixtures/sample.txt")],
+            ..NewBook::default()
+        })
+        .expect("add");
+    library
+        .formats()
+        .remove(book.id, "TXT")
+        .expect("create old trash");
+    let mut replacement = std::io::Cursor::new(include_bytes!("fixtures/replacement.txt"));
+    library
+        .formats()
+        .add_from_reader(book.id, "TXT", &mut replacement)
+        .expect("re-add");
+    let connection = rusqlite::Connection::open(fixture.database()).expect("open database");
+    connection
+        .execute("DROP TABLE metadata_dirtied", [])
+        .expect("inject transaction failure");
+    drop(connection);
+
+    assert!(library.formats().remove(book.id, "TXT").is_err());
+    assert_eq!(
+        library.formats().read(book.id, "TXT").expect("live bytes"),
+        include_bytes!("fixtures/replacement.txt")
+    );
+    assert_eq!(
+        library
+            .trash()
+            .read_format(book.id, "TXT")
+            .expect("previous trash"),
+        include_bytes!("fixtures/sample.txt")
+    );
+    assert!(library.pending_recovery().expect("journals").is_empty());
+}
+
+#[test]
+fn failed_book_trash_restores_the_live_directory_and_database() {
+    let fixture = support::TestLibrary::new();
+    let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+        .expect("open writable");
+    let book = library
+        .books()
+        .add(NewBook {
+            title: "Book trash rollback".into(),
+            authors: vec!["Tester".into()],
+            formats: vec![FormatFile::new("tests/fixtures/sample.epub")],
+            ..NewBook::default()
+        })
+        .expect("add");
+    let live = fixture.path().join(&book.relative_path);
+    let connection = rusqlite::Connection::open(fixture.database()).expect("open database");
+    connection
+        .execute("DROP TABLE metadata_dirtied", [])
+        .expect("inject transaction failure");
+    drop(connection);
+
+    assert!(
+        library
+            .books()
+            .remove(book.id, DeletionMode::Trash)
+            .is_err()
+    );
+    assert!(live.is_dir());
+    assert!(library.books().get(book.id).is_ok());
+    assert!(
+        !fixture
+            .path()
+            .join(format!(".caltrash/b/{}", book.id.get()))
+            .exists()
+    );
+    assert!(library.pending_recovery().expect("journals").is_empty());
+}
+
+#[test]
+fn whole_book_trash_refuses_unpreserved_deferred_state() {
+    let fixture = support::TestLibrary::new();
+    let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+        .expect("open writable");
+    let book = library
+        .books()
+        .add(NewBook {
+            title: "Annotated".into(),
+            authors: vec!["Tester".into()],
+            ..NewBook::default()
+        })
+        .expect("add");
+    let connection = rusqlite::Connection::open(fixture.database()).expect("open database");
+    connection
+        .execute_batch(
+            "CREATE TABLE annotations (book INTEGER NOT NULL); \
+             INSERT INTO annotations(book) VALUES (1);",
+        )
+        .expect("add deferred state");
+    drop(connection);
+
+    assert!(matches!(
+        library.books().remove(book.id, DeletionMode::Trash),
+        Err(Error::UnsupportedOperation { .. })
+    ));
+    assert!(library.books().get(book.id).is_ok());
+}
+
+#[test]
+fn whole_book_restore_refuses_a_live_id_collision() {
+    let fixture = support::TestLibrary::new();
+    let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+        .expect("open writable");
+    let book = library
+        .books()
+        .add(NewBook {
+            title: "Collision".into(),
+            authors: vec!["Tester".into()],
+            ..NewBook::default()
+        })
+        .expect("add");
+    library
+        .books()
+        .remove(book.id, DeletionMode::Trash)
+        .expect("trash");
+    let connection = rusqlite::Connection::open(fixture.database()).expect("open database");
+    connection
+        .execute(
+            "INSERT INTO books(id, title, path, uuid) VALUES (?1, 'Other', 'Other/Other', 'other')",
+            [book.id.get()],
+        )
+        .expect("insert colliding ID");
+    drop(connection);
+
+    assert!(matches!(
+        library.trash().restore_book(book.id),
+        Err(Error::UnsupportedOperation { .. })
+    ));
+    assert!(library.trash().book_path(book.id).is_ok());
 }
 
 #[test]
@@ -867,6 +1235,78 @@ fn interrupted_asset_removal_follows_the_database_state() {
 }
 
 #[test]
+fn interrupted_format_trash_follows_the_database_and_rebuilds_listing_metadata() {
+    for database_committed in [false, true] {
+        let fixture = support::TestLibrary::new();
+        let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+            .expect("open writable");
+        let book = library
+            .books()
+            .add(NewBook {
+                title: "Recover trash Ω".into(),
+                authors: vec!["First".into(), "Second".into()],
+                formats: vec![FormatFile::new("tests/fixtures/sample.txt")],
+                ..NewBook::default()
+            })
+            .expect("add");
+        let live = book.formats[0].path.clone();
+        let trash_relative = Path::new(".caltrash/f")
+            .join(book.id.get().to_string())
+            .join("txt");
+        let trash = fixture.path().join(&trash_relative);
+        std::fs::create_dir_all(trash.parent().expect("trash parent")).expect("create trash");
+        std::fs::rename(&live, &trash).expect("move format");
+        if database_committed {
+            let connection = rusqlite::Connection::open(fixture.database()).expect("open database");
+            connection
+                .execute(
+                    "DELETE FROM data WHERE book = ?1 AND format = 'TXT'",
+                    [book.id.get()],
+                )
+                .expect("commit simulated removal");
+        }
+        write_v2_journal(
+            fixture.path(),
+            "trash-format.journal",
+            &serde_json::json!({
+                "version": 2,
+                "book_id": book.id.get(),
+                "operation": {
+                    "operation": "trash",
+                    "direction": "to-trash",
+                    "kind": {"asset": "format", "format": "TXT"},
+                    "live": recovery_path_hex(&book_asset_relative(&book.relative_path, &live)),
+                    "trash": recovery_path_hex(&trash_relative),
+                    "previous": null,
+                    "listing": {
+                        "title": "Recover trash Ω",
+                        "authors": ["First", "Second"]
+                    }
+                }
+            }),
+        );
+
+        assert_eq!(library.recover_pending().expect("recover").resolved, 1);
+        if database_committed {
+            assert!(!live.exists());
+            assert_eq!(
+                library
+                    .trash()
+                    .read_format(book.id, "TXT")
+                    .expect("trash bytes"),
+                include_bytes!("fixtures/sample.txt")
+            );
+            let listed = library.trash().list().expect("list");
+            assert_eq!(listed.formats[0].title, "Recover trash Ω");
+            assert_eq!(listed.formats[0].authors, ["First", "Second"]);
+        } else {
+            assert!(live.is_file());
+            assert!(!trash.exists());
+        }
+    }
+}
+
+#[test]
 fn interrupted_book_move_follows_the_committed_database_path() {
     for database_committed in [false, true] {
         let fixture = support::TestLibrary::new();
@@ -1056,6 +1496,59 @@ fn audit_reports_cover_symlink_escape() {
     assert!(report.issues.iter().any(|issue| {
         issue.kind == AuditIssueKind::UnsafeCoverPath && issue.book_id == Some(book.id)
     }));
+}
+
+#[cfg(unix)]
+#[test]
+fn trash_listing_rejects_numeric_symlink_entries() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = support::TestLibrary::new();
+    let outside = tempfile::tempdir().expect("outside");
+    std::fs::create_dir_all(fixture.path().join(".caltrash/f")).expect("trash category");
+    symlink(outside.path(), fixture.path().join(".caltrash/f/7")).expect("trash symlink");
+    let library = Library::open(fixture.path()).expect("open");
+
+    assert!(matches!(
+        library.trash().list(),
+        Err(Error::InvalidLibrary { .. } | Error::PathEscape { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn whole_book_trash_refuses_symlinks_inside_the_book_tree() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = support::TestLibrary::new();
+    let outside = tempfile::tempdir().expect("outside");
+    let outside_file = outside.path().join("keep.txt");
+    std::fs::write(&outside_file, b"outside").expect("outside file");
+    let library =
+        Library::open_with(fixture.path(), OpenOptions::new().read_write(true)).expect("open");
+    let book = library
+        .books()
+        .add(NewBook {
+            title: "Symlink trash".into(),
+            authors: vec!["Tester".into()],
+            ..NewBook::default()
+        })
+        .expect("add");
+    symlink(
+        &outside_file,
+        fixture.path().join(&book.relative_path).join("linked.txt"),
+    )
+    .expect("symlink");
+
+    assert!(matches!(
+        library.books().remove(book.id, DeletionMode::Trash),
+        Err(Error::InvalidLibrary { .. } | Error::PathEscape { .. })
+    ));
+    assert_eq!(
+        std::fs::read(&outside_file).expect("outside intact"),
+        b"outside"
+    );
+    assert!(library.books().get(book.id).is_ok());
 }
 
 #[cfg(unix)]
