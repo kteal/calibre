@@ -32,7 +32,7 @@ has run.
 | Read-only audit | Supported | SQLite quick check and core asset agreement |
 | Read custom columns | Partial | Stored scalar and normalized values; no template evaluation |
 | Write custom columns | Unsupported | Definition and value mutation are refused |
-| Recovery | Partial | Durable for book add and permanent removal |
+| Recovery | Supported | Durable for book, format, cover, and directory-move writes |
 | Permanent book removal | Conditional | Disabled with FTS or active custom columns |
 | Calibre trash | Unsupported | Returns `UnsupportedOperation` |
 
@@ -83,12 +83,13 @@ Replacements retain the old file until the database commits. Book deletion
 stages the directory inside the library root. On ordinary errors, the crate
 restores staged files or directories.
 
-SQLite and a filesystem do not provide one shared transaction. A process or
-machine crash can interrupt compensation. Book creation and permanent removal
-write journals under `.calibre-rs/recovery` before filesystem changes. Pending
-journals disable write capabilities. `recover_pending()` consults the book row
-to remove an orphan, restore a staged removal, or finish a committed removal.
+SQLite and a filesystem do not provide one shared transaction. Book, format,
+cover, and directory-move writes create journals under
+`.calibre-rs/recovery`. Pending journals disable write capabilities.
+`recover_pending()` compares the current database state with the journal, then
+completes or reverses the filesystem changes.
 
-Format and cover replacement and title or first-author directory moves do not
-write durable journals. The crate does not claim crash recovery for those
-operations.
+Recovery requires an intact journal and unambiguous database and filesystem
+state. It returns an error and retains the journal if another process changed
+either side. Storage-device failure and concurrent external writers remain
+outside the compatibility claim.

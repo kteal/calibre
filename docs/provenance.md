@@ -44,6 +44,11 @@ float, enumeration, and composite definitions. No Calibre query,
 trigger, template evaluator, or custom-column implementation entered this
 crate.
 
+The version-2 recovery journal and reconciliation rules are project-specific
+designs. They use database values and filesystem paths that the crate already
+reads or writes. The implementation does not reuse Calibre recovery code,
+algorithms, triggers, or SQL.
+
 The implementation registers independent `uuid4` and conservative `title_sort`
 SQLite functions because existing Calibre triggers call functions with those
 names. It does not reproduce Calibre's locale-aware algorithms.

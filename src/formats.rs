@@ -2,7 +2,7 @@ use crate::library::{LibraryInner, database_error};
 use crate::{BookId, Error, Format, Result};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -165,8 +165,45 @@ impl Formats {
         }
         let format = crate::paths::format_name(format.as_ref())?;
         let _guard = self.inner.lock_writer("remove format")?;
-        let path = self.path(book, &format)?;
+        let book_value = crate::Library {
+            inner: Arc::clone(&self.inner),
+        }
+        .books()
+        .get(book)?;
+        let existing = book_value
+            .formats
+            .iter()
+            .find(|item| item.format.eq_ignore_ascii_case(&format))
+            .ok_or_else(|| Error::UnsupportedOperation {
+                operation: "remove format",
+                reason: format!("book {book} has no {format} format"),
+            })?;
+        let path = existing.path.clone();
+        let before_file = regular_file_exists(&path, "remove format")?;
+        let backup = asset_sibling_path(&path, "remove");
         let mut connection = self.inner.write_connection("remove format")?;
+        let before = connection
+            .query_row(
+                "SELECT format, uncompressed_size, name FROM data \
+                 WHERE book = ?1 AND format = ?2 COLLATE NOCASE",
+                params![book.get(), format],
+                |row| {
+                    Ok(crate::recovery::FormatRecoveryState {
+                        format: row.get(0)?,
+                        size: row.get(1)?,
+                        stem: row.get(2)?,
+                    })
+                },
+            )
+            .map_err(|error| database_error("inspect format row", &self.inner.database, error))?;
+        let journal = crate::recovery::RecoveryJournal::begin_format_removal(
+            &self.inner.root,
+            book,
+            &path,
+            &backup,
+            before_file,
+            before,
+        )?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| {
@@ -176,8 +213,8 @@ impl Formats {
                     error,
                 )
             })?;
-        let mut replacement = if path.exists() {
-            Some(AssetReplacement::stage_removal(&path)?)
+        let mut replacement = if before_file {
+            Some(AssetReplacement::stage_removal(&path, &backup)?)
         } else {
             None
         };
@@ -201,12 +238,14 @@ impl Formats {
                 if let Some(replacement) = replacement.take() {
                     replacement.commit()?;
                 }
+                journal.complete()?;
                 Ok(())
             }
             Err(error) => {
                 if let Some(replacement) = replacement.take() {
                     replacement.rollback()?;
                 }
+                journal.complete()?;
                 Err(error)
             }
         }
@@ -248,11 +287,18 @@ impl Formats {
             });
         }
         let mut connection = self.inner.write_connection("write format")?;
-        let existing: Option<String> = connection
+        let existing: Option<crate::recovery::FormatRecoveryState> = connection
             .query_row(
-                "SELECT name FROM data WHERE book = ?1 AND format = ?2 COLLATE NOCASE",
+                "SELECT format, uncompressed_size, name FROM data \
+                 WHERE book = ?1 AND format = ?2 COLLATE NOCASE",
                 params![book.get(), format],
-                |row| row.get(0),
+                |row| {
+                    Ok(crate::recovery::FormatRecoveryState {
+                        format: row.get(0)?,
+                        size: row.get(1)?,
+                        stem: row.get(2)?,
+                    })
+                },
             )
             .optional()
             .map_err(|error| database_error("inspect format row", &self.inner.database, error))?;
@@ -262,8 +308,8 @@ impl Formats {
                 reason: format!("book {book} already has {format}"),
             });
         }
-        let stem = if let Some(stem) = existing {
-            stem
+        let stem = if let Some(existing) = &existing {
+            existing.stem.clone()
         } else {
             connection
                 .query_row(
@@ -286,6 +332,51 @@ impl Formats {
                 })
         };
         let destination = directory.join(format!("{stem}.{}", format.to_ascii_lowercase()));
+        let before_file = regular_file_exists(&destination, "write format")?;
+        let backup = asset_sibling_path(&destination, "backup");
+        let staged = asset_sibling_path(&destination, "stage");
+        let mut journal = crate::recovery::RecoveryJournal::begin_format_write(
+            &self.inner.root,
+            book,
+            &destination,
+            &backup,
+            &staged,
+            before_file,
+            existing,
+            &format,
+            &stem,
+        )?;
+        let source_size = match stage_reader(reader, &staged) {
+            Ok(size) => size,
+            Err(error) => {
+                remove_staged_if_present(&staged)?;
+                journal.complete()?;
+                return Err(error);
+            }
+        };
+        let source_size = match crate::books::i64_size(source_size) {
+            Ok(size) => size,
+            Err(error) => {
+                remove_staged_if_present(&staged)?;
+                journal.complete()?;
+                return Err(error);
+            }
+        };
+        if let Err(error) = journal.mark_format_ready(source_size) {
+            remove_staged_if_present(&staged)?;
+            journal.complete()?;
+            return Err(error);
+        }
+        let replacement =
+            match AssetReplacement::install_staged(&destination, &backup, &staged, before_file) {
+                Ok(replacement) => replacement,
+                Err(error) => {
+                    remove_staged_if_present(&staged)?;
+                    AssetReplacement::restore_uninstalled(&destination, &backup, before_file)?;
+                    journal.complete()?;
+                    return Err(error);
+                }
+            };
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| {
@@ -295,15 +386,6 @@ impl Formats {
                     error,
                 )
             })?;
-        let (replacement, source_size) =
-            AssetReplacement::install_from_reader(reader, &destination)?;
-        let source_size = match crate::books::i64_size(source_size) {
-            Ok(size) => size,
-            Err(error) => {
-                replacement.rollback()?;
-                return Err(error);
-            }
-        };
         let result = transaction
             .execute(
                 "INSERT INTO data(book, format, uncompressed_size, name) VALUES (?1, ?2, ?3, ?4) \
@@ -315,9 +397,13 @@ impl Formats {
             .and_then(|()| transaction.commit())
             .map_err(|error| database_error("write format", &self.inner.database, error));
         match result {
-            Ok(()) => replacement.commit()?,
+            Ok(()) => {
+                replacement.commit()?;
+                journal.complete()?;
+            }
             Err(error) => {
                 replacement.rollback()?;
+                journal.complete()?;
                 return Err(error);
             }
         }
@@ -331,7 +417,7 @@ impl Formats {
     }
 }
 
-fn mark_format_changed(
+pub(crate) fn mark_format_changed(
     transaction: &rusqlite::Transaction<'_>,
     book: BookId,
 ) -> rusqlite::Result<()> {
@@ -350,46 +436,59 @@ pub(crate) struct AssetReplacement {
 }
 
 impl AssetReplacement {
-    pub(crate) fn install_from_reader(
-        source: &mut impl Read,
+    pub(crate) fn install_staged(
         destination: &Path,
-    ) -> Result<(Self, u64)> {
-        let backup = if destination.exists() {
-            let backup =
-                destination.with_file_name(format!(".calibre-rs-backup-{}", uuid::Uuid::new_v4()));
-            fs::rename(destination, &backup).map_err(|error| {
+        backup: &Path,
+        staged: &Path,
+        before_file: bool,
+    ) -> Result<Self> {
+        let backup = if before_file {
+            fs::rename(destination, backup).map_err(|error| {
                 crate::error::io_error("stage existing asset", destination, error)
             })?;
-            Some(backup)
+            Some(backup.to_path_buf())
         } else {
             None
         };
-        match copy_reader_to_new_asset(source, destination) {
-            Ok(size) => Ok((
-                Self {
-                    destination: destination.to_path_buf(),
-                    backup,
-                    installed: true,
-                },
-                size,
+        match fs::rename(staged, destination) {
+            Ok(()) => Ok(Self {
+                destination: destination.to_path_buf(),
+                backup,
+                installed: true,
+            }),
+            Err(error) => Err(crate::error::io_error(
+                "install staged asset",
+                staged,
+                error,
             )),
-            Err(error) => {
-                if let Some(backup) = &backup {
-                    let _ = fs::rename(backup, destination);
-                }
-                Err(error)
-            }
         }
     }
 
-    pub(crate) fn stage_removal(destination: &Path) -> Result<Self> {
-        let backup =
-            destination.with_file_name(format!(".calibre-rs-remove-{}", uuid::Uuid::new_v4()));
-        fs::rename(destination, &backup)
+    pub(crate) fn restore_uninstalled(
+        destination: &Path,
+        backup: &Path,
+        before_file: bool,
+    ) -> Result<()> {
+        let destination_exists = regular_file_exists(destination, "restore uninstalled asset")?;
+        let backup_exists = regular_file_exists(backup, "restore uninstalled asset")?;
+        match (destination_exists, backup_exists, before_file) {
+            (false, true, true) => fs::rename(backup, destination).map_err(|error| {
+                crate::error::io_error("restore uninstalled asset", backup, error)
+            }),
+            (true, false, true) | (false, false, false) => Ok(()),
+            _ => Err(Error::UnsupportedOperation {
+                operation: "restore uninstalled asset",
+                reason: "asset and backup paths have an ambiguous state".into(),
+            }),
+        }
+    }
+
+    pub(crate) fn stage_removal(destination: &Path, backup: &Path) -> Result<Self> {
+        fs::rename(destination, backup)
             .map_err(|error| crate::error::io_error("stage asset removal", destination, error))?;
         Ok(Self {
             destination: destination.to_path_buf(),
-            backup: Some(backup),
+            backup: Some(backup.to_path_buf()),
             installed: false,
         })
     }
@@ -417,27 +516,43 @@ impl AssetReplacement {
     }
 }
 
-fn copy_reader_to_new_asset(source: &mut impl Read, destination: &Path) -> Result<u64> {
-    if destination.exists() {
-        return Err(Error::InvalidInput {
-            field: "asset destination",
-            reason: format!("{} already exists", destination.display()),
-        });
-    }
-    let parent = destination.parent().ok_or_else(|| Error::InvalidInput {
-        field: "asset destination",
-        reason: "destination has no parent directory".into(),
-    })?;
-    let mut staged = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|error| crate::error::io_error("stage asset", parent, error))?;
-    let size = std::io::copy(source, staged.as_file_mut())
-        .map_err(|error| crate::error::io_error("copy staged asset", destination, error))?;
-    staged
-        .as_file()
+pub(crate) fn asset_sibling_path(destination: &Path, purpose: &str) -> PathBuf {
+    destination.with_file_name(format!(".calibre-rs-{purpose}-{}", uuid::Uuid::new_v4()))
+}
+
+pub(crate) fn stage_reader(source: &mut impl Read, staged: &Path) -> Result<u64> {
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(staged)
+        .map_err(|error| crate::error::io_error("create staged asset", staged, error))?;
+    let size = std::io::copy(source, &mut output)
+        .map_err(|error| crate::error::io_error("copy staged asset", staged, error))?;
+    output
         .sync_all()
-        .map_err(|error| crate::error::io_error("sync staged asset", destination, error))?;
-    staged.persist(destination).map_err(|error| {
-        crate::error::io_error("install staged asset", destination, error.error)
-    })?;
+        .map_err(|error| crate::error::io_error("sync staged asset", staged, error))?;
     Ok(size)
+}
+
+pub(crate) fn regular_file_exists(path: &Path, operation: &'static str) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(true),
+        Ok(_) => Err(Error::UnsupportedOperation {
+            operation,
+            reason: format!(
+                "expected a regular file or missing path: {}",
+                path.display()
+            ),
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(crate::error::io_error(operation, path, error)),
+    }
+}
+
+fn remove_staged_if_present(path: &Path) -> Result<()> {
+    if regular_file_exists(path, "remove staged asset")? {
+        fs::remove_file(path)
+            .map_err(|error| crate::error::io_error("remove staged asset", path, error))?;
+    }
+    Ok(())
 }

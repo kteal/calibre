@@ -260,7 +260,7 @@ impl Library {
         CustomColumns::new(Arc::clone(&self.inner))
     }
 
-    /// Lists durable records left by interrupted book operations.
+    /// Lists durable records left by interrupted database/filesystem writes.
     ///
     /// # Errors
     ///
@@ -269,7 +269,7 @@ impl Library {
         crate::recovery::pending(&self.inner.root)
     }
 
-    /// Resolves interrupted book additions and permanent removals.
+    /// Resolves interrupted book, format, cover, and directory-move writes.
     ///
     /// The database row determines whether a staged directory is kept,
     /// restored, or removed. Reopen the library after recovery to refresh its
@@ -291,6 +291,16 @@ impl LibraryInner {
     }
 
     pub(crate) fn write_connection(&self, operation: &'static str) -> Result<Connection> {
+        let connection = self.recovery_connection_for(operation)?;
+        crate::recovery::ensure_clear(&self.root, operation)?;
+        Ok(connection)
+    }
+
+    pub(crate) fn recovery_connection(&self) -> Result<Connection> {
+        self.recovery_connection_for("recover pending writes")
+    }
+
+    fn recovery_connection_for(&self, operation: &'static str) -> Result<Connection> {
         if self.mode != OpenMode::ReadWrite {
             return Err(Error::UnsupportedOperation {
                 operation,
@@ -304,7 +314,6 @@ impl LibraryInner {
                 supported: "version 27",
             });
         }
-        crate::recovery::ensure_clear(&self.root, operation)?;
         open_connection(&self.database, OpenMode::ReadWrite, self.busy_timeout)
     }
 

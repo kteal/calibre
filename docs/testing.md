@@ -19,7 +19,9 @@ Unit tests cover path validation and sanitization properties. Integration tests
 build a fresh schema-27 library for each case. They cover open modes, schema
 rejection, full metadata, rich queries, concurrent reads, streaming assets,
 read-only audits, custom-column reads, staged-write rollback, directory moves,
-permanent deletion, recovery journals, and Unix symlink escape.
+permanent deletion, recovery journals, and Unix symlink escape. Recovery tests
+construct interrupted format, cover, and directory-move states on both sides
+of the database commit, then verify rollback or roll-forward behavior.
 
 Property tests generate Unicode titles and metadata updates, then verify
 database and filesystem round trips.
@@ -54,8 +56,7 @@ licensing review described in `docs/provenance.md`.
 
 ## Remaining coverage
 
-The roadmap tracks Windows path edge cases, macOS case behavior, crash recovery
-for asset replacement and directory moves, Calibre trash, multiple Calibre
-versions, active FTS, and custom-column writes and cleanup. CI runs the Rust
-test suite on Linux, macOS, and Windows. Developers run the Calibre oracle test
-before recording compatibility with a Calibre release.
+The roadmap tracks Windows path edge cases, macOS case behavior, Calibre trash,
+multiple Calibre versions, active FTS, and custom-column writes and cleanup. CI
+runs the Rust test suite on Linux, macOS, and Windows. Developers run the
+Calibre oracle test before recording compatibility with a Calibre release.

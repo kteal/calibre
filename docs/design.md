@@ -77,8 +77,28 @@ present row after an interrupted removal makes the staged directory live data,
 so recovery restores it. An absent row lets recovery finish deleting the
 staged directory.
 
-This decision rule cannot resolve every asset replacement. A cover replacement
-can leave the same database flag before and after the operation, for example.
-Format and cover replacement and book-directory moves keep their in-process
-compensation until the journal records enough old and new state to resolve each
-crash boundary.
+## ADR-0003: durable asset and directory-move recovery
+
+Status: accepted for pre-release 0.1.0.
+
+Format and cover writes store a version-2 JSON journal before staging bytes.
+The record contains the old and intended database values, destination,
+temporary path, backup path, and whether a file existed before the write. The
+crate replaces the staging-phase record with a ready-phase record after it
+syncs the staged file.
+
+Recovery treats the database as the commit decision. The old database state
+rolls the files back. The intended state rolls them forward. A cover
+replacement can keep `has_cover = 1` on both sides, so a ready record rolls
+forward when both states match. A staging record always rolls back.
+
+Directory-move records contain the old and new book paths plus each format
+filename change. Recovery compares the current `books.path` value with those
+two paths, then completes or reverses the directory and file renames. It
+refuses recovery if the database matches neither state, both directories
+exist, or a required file has an ambiguous state.
+
+Version-1 book journals remain readable. New asset and move records use version
+2. Pending records block other writes until `recover_pending()` removes them.
+Normal errors still run compensation and remove the journal after they restore
+the old state.

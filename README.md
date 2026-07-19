@@ -32,7 +32,8 @@ The first milestone provides:
 - compensated directory moves after title or first-author changes;
 - read-only library audits for database, format, cover, and path disagreement;
 - read-only custom-column discovery and stored-value access;
-- durable recovery for interrupted book creation and permanent removal;
+- durable recovery for interrupted book, format, cover, and directory-move
+  writes;
 - explicit permanent book deletion for libraries without active custom columns
   or full-text-search state.
 
@@ -78,11 +79,17 @@ Do not let Calibre and a Rust process write the same library at the same time.
 The crate serializes its own writers and uses SQLite transactions, but it does
 not share Calibre's in-process lock.
 
-Book creation and permanent deletion write a recovery record before changing
-the filesystem. If `capabilities().recovery_required` is true, inspect
-`pending_recovery()`, call `recover_pending()` from a read-write handle, and
-reopen the library. Format replacement, cover replacement, and directory moves
-have in-process compensation but no durable crash journal yet.
+Writes that combine SQLite and filesystem changes create a recovery record
+before changing either side. This covers book creation and removal, format and
+cover changes, and directory moves. If `capabilities().recovery_required` is
+true, inspect `pending_recovery()`, call `recover_pending()` from a read-write
+handle, and reopen the library.
+
+Recovery compares the current database state with both states recorded in the
+journal. It keeps the journal and returns an error when neither state matches
+or when filesystem paths are ambiguous. The crate does not claim recovery from
+lost or damaged journal files, storage-device failure, or concurrent writes by
+another process.
 
 Write tests create a new temporary library and stay inside that directory.
 

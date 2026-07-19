@@ -1,4 +1,4 @@
-use crate::formats::AssetReplacement;
+use crate::formats::{AssetReplacement, asset_sibling_path, regular_file_exists, stage_reader};
 use crate::library::{LibraryInner, database_error};
 use crate::{BookId, Error, Result};
 use rusqlite::TransactionBehavior;
@@ -97,7 +97,40 @@ impl Covers {
             });
         }
         let destination = directory.join("cover.jpg");
+        let before = book_value.cover_path.is_some();
+        let before_file = regular_file_exists(&destination, "replace cover")?;
+        let backup = asset_sibling_path(&destination, "backup");
+        let staged = asset_sibling_path(&destination, "stage");
         let mut connection = self.inner.write_connection("replace cover")?;
+        let mut journal = crate::recovery::RecoveryJournal::begin_cover_write(
+            &self.inner.root,
+            book,
+            &destination,
+            &backup,
+            &staged,
+            before_file,
+            before,
+        )?;
+        if let Err(error) = stage_reader(reader, &staged) {
+            remove_staged_if_present(&staged)?;
+            journal.complete()?;
+            return Err(error);
+        }
+        if let Err(error) = journal.mark_cover_ready() {
+            remove_staged_if_present(&staged)?;
+            journal.complete()?;
+            return Err(error);
+        }
+        let replacement =
+            match AssetReplacement::install_staged(&destination, &backup, &staged, before_file) {
+                Ok(replacement) => replacement,
+                Err(error) => {
+                    remove_staged_if_present(&staged)?;
+                    AssetReplacement::restore_uninstalled(&destination, &backup, before_file)?;
+                    journal.complete()?;
+                    return Err(error);
+                }
+            };
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| {
@@ -107,7 +140,6 @@ impl Covers {
                     error,
                 )
             })?;
-        let (replacement, _) = AssetReplacement::install_from_reader(reader, &destination)?;
         let result = transaction
             .execute("UPDATE books SET has_cover = 1 WHERE id = ?1", [book.get()])
             .and_then(|changed| {
@@ -123,10 +155,12 @@ impl Covers {
         match result {
             Ok(()) => {
                 replacement.commit()?;
+                journal.complete()?;
                 Ok(destination)
             }
             Err(error) => {
                 replacement.rollback()?;
+                journal.complete()?;
                 Err(error)
             }
         }
@@ -143,7 +177,16 @@ impl Covers {
         let Some(path) = self.path(book)? else {
             return Ok(false);
         };
+        let before_file = regular_file_exists(&path, "remove cover")?;
+        let backup = asset_sibling_path(&path, "remove");
         let mut connection = self.inner.write_connection("remove cover")?;
+        let journal = crate::recovery::RecoveryJournal::begin_cover_removal(
+            &self.inner.root,
+            book,
+            &path,
+            &backup,
+            before_file,
+        )?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| {
@@ -153,8 +196,8 @@ impl Covers {
                     error,
                 )
             })?;
-        let mut replacement = if path.exists() {
-            Some(AssetReplacement::stage_removal(&path)?)
+        let mut replacement = if before_file {
+            Some(AssetReplacement::stage_removal(&path, &backup)?)
         } else {
             None
         };
@@ -175,14 +218,24 @@ impl Covers {
                 if let Some(replacement) = replacement.take() {
                     replacement.commit()?;
                 }
+                journal.complete()?;
                 Ok(true)
             }
             Err(error) => {
                 if let Some(replacement) = replacement.take() {
                     replacement.rollback()?;
                 }
+                journal.complete()?;
                 Err(error)
             }
         }
     }
+}
+
+fn remove_staged_if_present(path: &Path) -> Result<()> {
+    if regular_file_exists(path, "remove staged cover")? {
+        fs::remove_file(path)
+            .map_err(|error| crate::error::io_error("remove staged cover", path, error))?;
+    }
+    Ok(())
 }

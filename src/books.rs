@@ -319,6 +319,26 @@ impl Books {
                 reason: "the destination book directory already exists".into(),
             });
         }
+        let new_stem = crate::paths::format_stem(&title, &authors[0]);
+        let mut recovery_files = Vec::new();
+        if should_move {
+            for format in &existing.formats {
+                if !crate::formats::regular_file_exists(&format.path, "update book path")? {
+                    continue;
+                }
+                let old_name = format.path.file_name().ok_or_else(|| Error::InvalidInput {
+                    field: "format path",
+                    reason: "existing format has no filename".into(),
+                })?;
+                let new_name = format!("{new_stem}.{}", format.format.to_ascii_lowercase());
+                if old_name != OsStr::new(&new_name) {
+                    recovery_files.push(crate::recovery::RecoveryFileRename {
+                        old_name: PathBuf::from(old_name),
+                        new_name: PathBuf::from(new_name),
+                    });
+                }
+            }
+        }
 
         let mut connection = self.inner.write_connection("update book")?;
         let transaction = connection
@@ -326,6 +346,18 @@ impl Books {
             .map_err(|error| {
                 database_error("begin update-book transaction", &self.inner.database, error)
             })?;
+        let mut move_journal = if should_move {
+            Some(crate::recovery::RecoveryJournal::begin_book_move(
+                &self.inner.root,
+                id,
+                &old_directory,
+                &new_directory,
+                &new_stem,
+                &recovery_files,
+            )?)
+        } else {
+            None
+        };
         let mut moved_directory = false;
         let mut renamed_files = Vec::new();
         let result = (|| -> Result<()> {
@@ -454,24 +486,13 @@ impl Books {
                     crate::error::io_error("move book directory", &old_directory, source)
                 })?;
                 moved_directory = true;
-                let new_stem = crate::paths::format_stem(&title, &authors[0]);
-                for format in &existing.formats {
-                    let old_name = format.path.file_name().ok_or_else(|| Error::InvalidInput {
-                        field: "format path",
-                        reason: "existing format has no filename".into(),
+                for rename in &recovery_files {
+                    let moved_old = new_directory.join(&rename.old_name);
+                    let renamed = new_directory.join(&rename.new_name);
+                    fs::rename(&moved_old, &renamed).map_err(|source| {
+                        crate::error::io_error("rename moved format", &moved_old, source)
                     })?;
-                    let moved_old = new_directory.join(old_name);
-                    if !moved_old.exists() {
-                        continue;
-                    }
-                    let renamed = new_directory
-                        .join(format!("{new_stem}.{}", format.format.to_ascii_lowercase()));
-                    if moved_old != renamed {
-                        fs::rename(&moved_old, &renamed).map_err(|source| {
-                            crate::error::io_error("rename moved format", &moved_old, source)
-                        })?;
-                        renamed_files.push((renamed, moved_old));
-                    }
+                    renamed_files.push((renamed, moved_old));
                 }
                 transaction
                     .execute(
@@ -499,16 +520,39 @@ impl Books {
         })();
 
         if let Err(error) = result {
+            let mut rollback_error = None;
             for (renamed, old) in renamed_files.into_iter().rev() {
-                let _ = fs::rename(renamed, old);
+                if let Err(source) = fs::rename(&renamed, &old) {
+                    rollback_error = Some(crate::error::io_error(
+                        "restore renamed format",
+                        renamed,
+                        source,
+                    ));
+                    break;
+                }
             }
-            if moved_directory {
-                let _ = fs::rename(&new_directory, &old_directory);
+            if rollback_error.is_none() && moved_directory {
+                if let Err(source) = fs::rename(&new_directory, &old_directory) {
+                    rollback_error = Some(crate::error::io_error(
+                        "restore moved book directory",
+                        &new_directory,
+                        source,
+                    ));
+                }
+            }
+            if let Some(rollback_error) = rollback_error {
+                return Err(rollback_error);
+            }
+            if let Some(journal) = move_journal.take() {
+                journal.complete()?;
             }
             return Err(error);
         }
         if should_move {
             remove_empty_parent(&old_directory, &self.inner.root);
+            if let Some(journal) = move_journal.take() {
+                journal.complete()?;
+            }
         }
         self.get(id)
     }

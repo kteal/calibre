@@ -27,6 +27,8 @@ include = [
 
 [dependencies]
 rusqlite = { version = "0.35.0", default-features = false, features = ["bundled", "functions"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
 tempfile = "3.27.0"
 unicode-normalization = "0.1.25"
 uuid = { version = "1.24.0", features = ["v4"] }

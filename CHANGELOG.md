@@ -13,8 +13,8 @@ This project follows Semantic Versioning.
 - Add, replace, retrieve, copy, stream, and remove formats and covers.
 - Audit database integrity and core filesystem agreement without mutation.
 - Discover custom-column definitions and read scalar and normalized values.
-- Recover interrupted book additions and permanent removals from durable
-  journals.
+- Recover interrupted book, format, cover, and directory-move writes from
+  durable versioned journals.
 - Permanently delete books when no unsupported deferred state is active.
 - Add disposable integration, property, and Calibre oracle tests.
 

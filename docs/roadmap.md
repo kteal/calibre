@@ -12,18 +12,24 @@ Acceptance:
 
 Status: implemented. Exact sort and filename parity remains a documented gap.
 
-## Next 0.1 batch: complete crash recovery and trash
+## Completed 0.1 batch: crash recovery
 
 Acceptance:
 
 - extend the recovery journal from book add and removal to formats, covers, and
   directory moves;
 - inject process interruption at each boundary and recover on next open;
+
+Status: implemented with version-2 journals and database-directed recovery.
+Tests cover rollback and roll-forward decisions for formats, covers whose
+database flag does not change, and book-directory moves.
+
+## Next 0.1 batch: Calibre trash
+
+Acceptance:
+
 - match Calibre's book and format trash layout;
 - restore and expire trash through paired Calibre/Rust tests.
-
-Current status: book add and permanent removal have durable recovery. Asset
-replacement and directory moves retain in-process compensation.
 
 ## Later 0.1 batch: schema and platform matrix
 

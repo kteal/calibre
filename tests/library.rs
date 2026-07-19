@@ -220,6 +220,12 @@ fn format_replacement_failure_restores_old_bytes() {
         library.formats().read(book.id, "TXT").expect("old bytes"),
         include_bytes!("fixtures/sample.txt")
     );
+    assert!(
+        library
+            .pending_recovery()
+            .expect("recovery state")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -260,6 +266,12 @@ fn cover_replacement_failure_restores_old_bytes() {
             .expect("read restored cover")
             .expect("cover"),
         original
+    );
+    assert!(
+        library
+            .pending_recovery()
+            .expect("recovery state")
+            .is_empty()
     );
 }
 
@@ -638,6 +650,296 @@ fn interrupted_book_removal_restores_a_book_still_present_in_database() {
 }
 
 #[test]
+fn interrupted_format_replacement_rolls_back_or_forward_from_database_state() {
+    for database_committed in [false, true] {
+        let fixture = support::TestLibrary::new();
+        let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+            .expect("open writable");
+        let book = library
+            .books()
+            .add(NewBook {
+                title: "Recover format".into(),
+                authors: vec!["Tester".into()],
+                formats: vec![FormatFile::new("tests/fixtures/sample.txt")],
+                ..NewBook::default()
+            })
+            .expect("add");
+        let destination = book.formats[0].path.clone();
+        let relative_destination = destination.strip_prefix(fixture.path()).expect("relative");
+        let backup = destination.with_file_name(".format-backup");
+        let relative_backup = backup.strip_prefix(fixture.path()).expect("relative");
+        let staged = destination.with_file_name(".format-stage");
+        let relative_staged = staged.strip_prefix(fixture.path()).expect("relative");
+        let (format, old_size, stem): (String, i64, String) =
+            rusqlite::Connection::open(fixture.database())
+                .expect("open database")
+                .query_row(
+                    "SELECT format, uncompressed_size, name FROM data WHERE book = ?1",
+                    [book.id.get()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .expect("format row");
+        let replacement = b"replacement bytes after interruption";
+        let new_size = i64::try_from(replacement.len()).expect("size");
+        std::fs::rename(&destination, &backup).expect("stage old format");
+        std::fs::write(&destination, replacement).expect("install new format");
+        if database_committed {
+            let connection = rusqlite::Connection::open(fixture.database()).expect("open database");
+            connection
+                .execute(
+                    "UPDATE data SET uncompressed_size = ?1 WHERE book = ?2",
+                    rusqlite::params![new_size, book.id.get()],
+                )
+                .expect("commit simulated row");
+        }
+        write_v2_journal(
+            fixture.path(),
+            "format.journal",
+            &serde_json::json!({
+                "version": 2,
+                "book_id": book.id.get(),
+                "operation": {
+                    "operation": "asset",
+                    "phase": "ready",
+                    "destination": recovery_path_hex(relative_destination),
+                    "backup": recovery_path_hex(relative_backup),
+                    "staged": recovery_path_hex(relative_staged),
+                    "before_file": true,
+                    "database": {
+                        "asset": "format",
+                        "before": {"format": format, "size": old_size, "stem": stem},
+                        "after": {"format": "TXT", "size": new_size, "stem": stem}
+                    }
+                }
+            }),
+        );
+
+        assert_eq!(library.recover_pending().expect("recover").resolved, 1);
+        let expected: &[u8] = if database_committed {
+            replacement
+        } else {
+            include_bytes!("fixtures/sample.txt")
+        };
+        assert_eq!(
+            std::fs::read(&destination).expect("recovered bytes"),
+            expected
+        );
+        assert!(!backup.exists());
+    }
+}
+
+#[test]
+fn interrupted_cover_replacement_with_unchanged_flag_rolls_forward() {
+    let fixture = support::TestLibrary::new();
+    let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+        .expect("open writable");
+    let book = library
+        .books()
+        .add(NewBook {
+            title: "Recover cover".into(),
+            authors: vec!["Tester".into()],
+            cover: Some("tests/fixtures/cover.jpg".into()),
+            ..NewBook::default()
+        })
+        .expect("add");
+    let destination = book.cover_path.expect("cover path");
+    let backup = destination.with_file_name(".cover-backup");
+    let staged = destination.with_file_name(".cover-stage");
+    std::fs::rename(&destination, &backup).expect("stage old cover");
+    std::fs::write(&staged, b"new recovered cover").expect("stage new cover");
+    write_v2_journal(
+        fixture.path(),
+        "cover.journal",
+        &serde_json::json!({
+            "version": 2,
+            "book_id": book.id.get(),
+            "operation": {
+                "operation": "asset",
+                "phase": "ready",
+                "destination": recovery_path_hex(destination.strip_prefix(fixture.path()).expect("relative")),
+                "backup": recovery_path_hex(backup.strip_prefix(fixture.path()).expect("relative")),
+                "staged": recovery_path_hex(staged.strip_prefix(fixture.path()).expect("relative")),
+                "before_file": true,
+                "database": {"asset": "cover", "before": true, "after": true}
+            }
+        }),
+    );
+
+    assert_eq!(library.recover_pending().expect("recover").resolved, 1);
+    assert_eq!(
+        std::fs::read(&destination).expect("recovered cover"),
+        b"new recovered cover"
+    );
+    assert!(!backup.exists());
+    assert!(!staged.exists());
+}
+
+#[test]
+fn interrupted_asset_removal_follows_the_database_state() {
+    for database_committed in [false, true] {
+        let fixture = support::TestLibrary::new();
+        let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+            .expect("open writable");
+        let book = library
+            .books()
+            .add(NewBook {
+                title: "Recover removals".into(),
+                authors: vec!["Tester".into()],
+                formats: vec![FormatFile::new("tests/fixtures/sample.epub")],
+                cover: Some("tests/fixtures/cover.jpg".into()),
+                ..NewBook::default()
+            })
+            .expect("add");
+
+        let format_path = book.formats[0].path.clone();
+        let format_backup = format_path.with_file_name(".format-remove");
+        let (format, size, stem): (String, i64, String) =
+            rusqlite::Connection::open(fixture.database())
+                .expect("open database")
+                .query_row(
+                    "SELECT format, uncompressed_size, name FROM data WHERE book = ?1",
+                    [book.id.get()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .expect("format row");
+        std::fs::rename(&format_path, &format_backup).expect("stage format removal");
+
+        let cover_path = book.cover_path.expect("cover path");
+        let cover_backup = cover_path.with_file_name(".cover-remove");
+        std::fs::rename(&cover_path, &cover_backup).expect("stage cover removal");
+        if database_committed {
+            let connection = rusqlite::Connection::open(fixture.database()).expect("open database");
+            connection
+                .execute("DELETE FROM data WHERE book = ?1", [book.id.get()])
+                .expect("commit format removal");
+            connection
+                .execute(
+                    "UPDATE books SET has_cover = 0 WHERE id = ?1",
+                    [book.id.get()],
+                )
+                .expect("commit cover removal");
+        }
+        write_v2_journal(
+            fixture.path(),
+            "format-remove.journal",
+            &serde_json::json!({
+                "version": 2,
+                "book_id": book.id.get(),
+                "operation": {
+                    "operation": "asset",
+                    "phase": "ready",
+                    "destination": recovery_path_hex(format_path.strip_prefix(fixture.path()).expect("relative")),
+                    "backup": recovery_path_hex(format_backup.strip_prefix(fixture.path()).expect("relative")),
+                    "staged": null,
+                    "before_file": true,
+                    "database": {
+                        "asset": "format",
+                        "before": {"format": format, "size": size, "stem": stem},
+                        "after": null
+                    }
+                }
+            }),
+        );
+        write_v2_journal(
+            fixture.path(),
+            "cover-remove.journal",
+            &serde_json::json!({
+                "version": 2,
+                "book_id": book.id.get(),
+                "operation": {
+                    "operation": "asset",
+                    "phase": "ready",
+                    "destination": recovery_path_hex(cover_path.strip_prefix(fixture.path()).expect("relative")),
+                    "backup": recovery_path_hex(cover_backup.strip_prefix(fixture.path()).expect("relative")),
+                    "staged": null,
+                    "before_file": true,
+                    "database": {"asset": "cover", "before": true, "after": false}
+                }
+            }),
+        );
+
+        assert_eq!(library.recover_pending().expect("recover").resolved, 2);
+        assert_eq!(format_path.exists(), !database_committed);
+        assert_eq!(cover_path.exists(), !database_committed);
+        assert!(!format_backup.exists());
+        assert!(!cover_backup.exists());
+    }
+}
+
+#[test]
+fn interrupted_book_move_follows_the_committed_database_path() {
+    for database_committed in [false, true] {
+        let fixture = support::TestLibrary::new();
+        let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+            .expect("open writable");
+        let book = library
+            .books()
+            .add(NewBook {
+                title: "Recover move".into(),
+                authors: vec!["Tester".into()],
+                formats: vec![FormatFile::new("tests/fixtures/sample.epub")],
+                ..NewBook::default()
+            })
+            .expect("add");
+        let old_relative = book.relative_path.clone();
+        let old_directory = fixture.path().join(&old_relative);
+        let new_relative = Path::new("Other").join(format!("Moved ({})", book.id.get()));
+        let new_directory = fixture.path().join(&new_relative);
+        let old_name = book.formats[0]
+            .path
+            .file_name()
+            .expect("old filename")
+            .to_owned();
+        let new_name = std::ffi::OsString::from("Moved - Other.epub");
+        if database_committed {
+            let connection = rusqlite::Connection::open(fixture.database()).expect("open database");
+            connection
+                .execute(
+                    "UPDATE books SET path = ?1 WHERE id = ?2",
+                    rusqlite::params![
+                        new_relative.to_string_lossy().replace('\\', "/"),
+                        book.id.get()
+                    ],
+                )
+                .expect("commit simulated path");
+        } else {
+            std::fs::create_dir_all(new_directory.parent().expect("new parent"))
+                .expect("create new parent");
+            std::fs::rename(&old_directory, &new_directory).expect("move directory");
+            std::fs::rename(new_directory.join(&old_name), new_directory.join(&new_name))
+                .expect("rename format");
+        }
+        write_v2_journal(
+            fixture.path(),
+            "move.journal",
+            &serde_json::json!({
+                "version": 2,
+                "book_id": book.id.get(),
+                "operation": {
+                    "operation": "book-move",
+                    "old_directory": recovery_path_hex(&old_relative),
+                    "new_directory": recovery_path_hex(&new_relative),
+                    "new_stem": "Moved - Other",
+                    "files": [{
+                        "old_name": recovery_path_hex(Path::new(&old_name)),
+                        "new_name": recovery_path_hex(Path::new(&new_name))
+                    }]
+                }
+            }),
+        );
+
+        assert_eq!(library.recover_pending().expect("recover").resolved, 1);
+        if database_committed {
+            assert!(new_directory.join(&new_name).is_file());
+            assert!(!old_directory.exists());
+        } else {
+            assert!(old_directory.join(&old_name).is_file());
+            assert!(!new_directory.exists());
+        }
+    }
+}
+
+#[test]
 fn ambiguous_recovery_state_keeps_the_journal_and_write_block() {
     let fixture = support::TestLibrary::new();
     let relative = Path::new("Tester").join("Missing (4242)");
@@ -701,6 +1003,16 @@ fn recovery_path_hex(path: &Path) -> String {
         encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     encoded
+}
+
+fn write_v2_journal(root: &Path, filename: &str, record: &serde_json::Value) {
+    let recovery = root.join(".calibre-rs/recovery");
+    std::fs::create_dir_all(&recovery).expect("create recovery directory");
+    std::fs::write(
+        recovery.join(filename),
+        serde_json::to_vec(&record).expect("serialize journal"),
+    )
+    .expect("write recovery journal");
 }
 
 #[cfg(unix)]
