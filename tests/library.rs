@@ -665,11 +665,11 @@ fn interrupted_format_replacement_rolls_back_or_forward_from_database_state() {
             })
             .expect("add");
         let destination = book.formats[0].path.clone();
-        let relative_destination = destination.strip_prefix(fixture.path()).expect("relative");
+        let relative_destination = book_asset_relative(&book.relative_path, &destination);
         let backup = destination.with_file_name(".format-backup");
-        let relative_backup = backup.strip_prefix(fixture.path()).expect("relative");
+        let relative_backup = book_asset_relative(&book.relative_path, &backup);
         let staged = destination.with_file_name(".format-stage");
-        let relative_staged = staged.strip_prefix(fixture.path()).expect("relative");
+        let relative_staged = book_asset_relative(&book.relative_path, &staged);
         let (format, old_size, stem): (String, i64, String) =
             rusqlite::Connection::open(fixture.database())
                 .expect("open database")
@@ -701,9 +701,9 @@ fn interrupted_format_replacement_rolls_back_or_forward_from_database_state() {
                 "operation": {
                     "operation": "asset",
                     "phase": "ready",
-                    "destination": recovery_path_hex(relative_destination),
-                    "backup": recovery_path_hex(relative_backup),
-                    "staged": recovery_path_hex(relative_staged),
+                    "destination": recovery_path_hex(&relative_destination),
+                    "backup": recovery_path_hex(&relative_backup),
+                    "staged": recovery_path_hex(&relative_staged),
                     "before_file": true,
                     "database": {
                         "asset": "format",
@@ -756,9 +756,9 @@ fn interrupted_cover_replacement_with_unchanged_flag_rolls_forward() {
             "operation": {
                 "operation": "asset",
                 "phase": "ready",
-                "destination": recovery_path_hex(destination.strip_prefix(fixture.path()).expect("relative")),
-                "backup": recovery_path_hex(backup.strip_prefix(fixture.path()).expect("relative")),
-                "staged": recovery_path_hex(staged.strip_prefix(fixture.path()).expect("relative")),
+                    "destination": recovery_path_hex(&book_asset_relative(&book.relative_path, &destination)),
+                    "backup": recovery_path_hex(&book_asset_relative(&book.relative_path, &backup)),
+                    "staged": recovery_path_hex(&book_asset_relative(&book.relative_path, &staged)),
                 "before_file": true,
                 "database": {"asset": "cover", "before": true, "after": true}
             }
@@ -828,8 +828,8 @@ fn interrupted_asset_removal_follows_the_database_state() {
                 "operation": {
                     "operation": "asset",
                     "phase": "ready",
-                    "destination": recovery_path_hex(format_path.strip_prefix(fixture.path()).expect("relative")),
-                    "backup": recovery_path_hex(format_backup.strip_prefix(fixture.path()).expect("relative")),
+                    "destination": recovery_path_hex(&book_asset_relative(&book.relative_path, &format_path)),
+                    "backup": recovery_path_hex(&book_asset_relative(&book.relative_path, &format_backup)),
                     "staged": null,
                     "before_file": true,
                     "database": {
@@ -849,8 +849,8 @@ fn interrupted_asset_removal_follows_the_database_state() {
                 "operation": {
                     "operation": "asset",
                     "phase": "ready",
-                    "destination": recovery_path_hex(cover_path.strip_prefix(fixture.path()).expect("relative")),
-                    "backup": recovery_path_hex(cover_backup.strip_prefix(fixture.path()).expect("relative")),
+                    "destination": recovery_path_hex(&book_asset_relative(&book.relative_path, &cover_path)),
+                    "backup": recovery_path_hex(&book_asset_relative(&book.relative_path, &cover_backup)),
                     "staged": null,
                     "before_file": true,
                     "database": {"asset": "cover", "before": true, "after": false}
@@ -1003,6 +1003,10 @@ fn recovery_path_hex(path: &Path) -> String {
         encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     encoded
+}
+
+fn book_asset_relative(book_directory: &Path, asset: &Path) -> std::path::PathBuf {
+    book_directory.join(asset.file_name().expect("asset filename"))
 }
 
 fn write_v2_journal(root: &Path, filename: &str, record: &serde_json::Value) {
