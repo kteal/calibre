@@ -1,5 +1,11 @@
 # calibre
 
+[![CI](https://github.com/kteal/calibre/actions/workflows/ci.yml/badge.svg)](https://github.com/kteal/calibre/actions/workflows/ci.yml)
+[![Nix Flake](https://github.com/kteal/calibre/actions/workflows/nix.yml/badge.svg)](https://github.com/kteal/calibre/actions/workflows/nix.yml)
+[![Dependencies](https://github.com/kteal/calibre/actions/workflows/security.yml/badge.svg)](https://github.com/kteal/calibre/actions/workflows/security.yml)
+[![Rust 2024](https://img.shields.io/badge/Rust-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license-review)
+
 `calibre` is a native Rust crate for reading and writing existing Calibre
 libraries. It reads `metadata.db` with SQLite and works with book directories,
 formats, covers, and core metadata. Your program does not need the Calibre
