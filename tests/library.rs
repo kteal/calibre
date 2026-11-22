@@ -472,14 +472,8 @@ fn complete_book_format_cover_lifecycle() {
         .formats()
         .remove(updated.id, "TXT")
         .expect("remove txt");
-    assert!(
-        library
-            .books()
-            .get(updated.id)
-            .expect("book survives")
-            .formats
-            .is_empty()
-    );
+    let book = library.books().get(updated.id).expect("book survives");
+    assert_eq!(book.formats, []);
 
     assert!(library.covers().read(updated.id).expect("cover").is_some());
     assert!(library.covers().remove(updated.id).expect("remove cover"));
@@ -582,14 +576,8 @@ fn format_trash_lists_replaces_copies_and_restores() {
         library.formats().read(book.id, "TXT").expect("live txt"),
         include_bytes!("fixtures/replacement.txt")
     );
-    assert!(
-        library
-            .trash()
-            .list()
-            .expect("empty format trash")
-            .formats
-            .is_empty()
-    );
+    let trash = library.trash().list().expect("empty format trash");
+    assert_eq!(trash.formats, []);
 
     library
         .formats()
@@ -631,7 +619,7 @@ fn whole_book_trash_round_trips_core_metadata_and_assets() {
     assert_eq!(listing.books[0].book_id, book.id);
     assert_eq!(listing.books[0].title, "The Odyssey λ");
     assert_eq!(listing.books[0].authors, ["Homer", "Translator"]);
-    assert!(listing.books[0].formats.is_empty());
+    assert_eq!(listing.books[0].formats, Vec::<String>::new());
 
     let copied = fixture.path().join("copied-book");
     library
@@ -722,7 +710,7 @@ fn trash_delete_and_zero_age_expiry_are_explicit() {
             .expect("empty trash"),
         1
     );
-    assert!(library.trash().list().expect("empty").books.is_empty());
+    assert_eq!(library.trash().list().expect("empty").books, []);
 }
 
 #[test]
@@ -766,7 +754,7 @@ fn failed_format_trash_restores_live_and_previous_bytes() {
             .expect("previous trash"),
         include_bytes!("fixtures/sample.txt")
     );
-    assert!(library.pending_recovery().expect("journals").is_empty());
+    assert_eq!(library.pending_recovery().expect("journals"), []);
 }
 
 #[test]
@@ -804,7 +792,7 @@ fn failed_book_trash_restores_the_live_directory_and_database() {
             .join(format!(".caltrash/b/{}", book.id.get()))
             .exists()
     );
-    assert!(library.pending_recovery().expect("journals").is_empty());
+    assert_eq!(library.pending_recovery().expect("journals"), []);
 }
 
 #[test]
@@ -930,12 +918,7 @@ fn format_replacement_failure_restores_old_bytes() {
         library.formats().read(book.id, "TXT").expect("old bytes"),
         include_bytes!("fixtures/sample.txt")
     );
-    assert!(
-        library
-            .pending_recovery()
-            .expect("recovery state")
-            .is_empty()
-    );
+    assert_eq!(library.pending_recovery().expect("recovery state"), []);
 }
 
 #[test]
@@ -977,12 +960,7 @@ fn cover_replacement_failure_restores_old_bytes() {
             .expect("cover"),
         original
     );
-    assert!(
-        library
-            .pending_recovery()
-            .expect("recovery state")
-            .is_empty()
-    );
+    assert_eq!(library.pending_recovery().expect("recovery state"), []);
 }
 
 #[test]
@@ -1304,7 +1282,7 @@ fn pending_book_add_recovery_blocks_writes_and_removes_orphan() {
     ));
     assert_eq!(library.recover_pending().expect("recover").resolved, 1);
     assert!(!orphan.exists());
-    assert!(library.pending_recovery().expect("clear").is_empty());
+    assert_eq!(library.pending_recovery().expect("clear"), []);
 
     let reopened = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
         .expect("reopen after recovery");
