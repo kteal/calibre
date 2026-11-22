@@ -434,9 +434,7 @@ pub(crate) fn move_format_to_trash(
         .map_err(|error| {
             database_error("begin format-trash transaction", &inner.database, error)
         })?;
-    if previous_exists
-        && let Err(error) = fs::rename(&trash, &previous)
-    {
+    if previous_exists && let Err(error) = fs::rename(&trash, &previous) {
         journal.complete()?;
         return Err(crate::error::io_error(
             "stage previous trash entry",
@@ -512,9 +510,7 @@ pub(crate) fn move_book_to_trash(inner: &Arc<LibraryInner>, book: BookId) -> Res
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| database_error("begin book-trash transaction", &inner.database, error))?;
-    if previous_exists
-        && let Err(error) = fs::rename(&trash, &previous)
-    {
+    if previous_exists && let Err(error) = fs::rename(&trash, &previous) {
         journal.complete()?;
         return Err(crate::error::io_error(
             "stage previous trash entry",

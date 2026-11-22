@@ -899,11 +899,7 @@ fn roll_asset_forward(
                 (true, false, true) => {
                     ensure_file(destination, "recover asset destination")?;
                     fs::rename(destination, backup).map_err(|source| {
-                        crate::error::io_error(
-                            "stage asset during recovery",
-                            destination,
-                            source,
-                        )
+                        crate::error::io_error("stage asset during recovery", destination, source)
                     })?;
                 }
                 (false, true, true) | (false, false, false) => {}
@@ -1738,7 +1734,11 @@ fn decode_path(value: &str, journal: &Path) -> Result<PathBuf> {
                 reason: "invalid Windows recovery path encoding".into(),
             });
         }
-        let wide = pairs.iter().copied().map(u16::from_le_bytes).collect::<Vec<_>>();
+        let wide = pairs
+            .iter()
+            .copied()
+            .map(u16::from_le_bytes)
+            .collect::<Vec<_>>();
         PathBuf::from(OsString::from_wide(&wide))
     };
     #[cfg(not(any(unix, windows)))]
