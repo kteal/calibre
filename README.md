@@ -115,9 +115,8 @@ Write tests create a new temporary library and stay inside that directory.
 
 ## MSRV
 
-The minimum supported Rust version is 1.85.0. Rust 1.85 introduced stable Rust
-2024 support. CI tests this version and stable Rust. Dependencies in
-`Cargo.lock` must continue to support 1.85.0.
+The minimum supported Rust version is 1.89.0, as required by `rusqlite`.
+CI tests the committed lockfile with both Rust 1.89.0 and stable Rust.
 
 ## Development
 

@@ -11,7 +11,7 @@ Calibre as a black-box oracle in a temporary library. Record new research in
 Use Cargo 1.100 or newer when adding or updating dependencies, including when
 working in a Nix shell. The repository sets a seven-day minimum publish age
 for registry dependencies. Cargo keeps versions already in `Cargo.lock`.
-Continue testing the resulting lockfile with Rust 1.85.0.
+Continue testing the resulting lockfile with Rust 1.89.0.
 
 Run:
 

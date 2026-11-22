@@ -2,7 +2,7 @@
 name = "calibre"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 authors = ["calibre contributors"]
 description = "Native Rust creation of and access to Calibre libraries"
 documentation = "https://docs.rs/calibre"
@@ -27,7 +27,7 @@ include = [
 
 [dependencies]
 roxmltree = "0.21.1"
-rusqlite = { version = "0.35.0", default-features = false, features = ["bundled", "functions"] }
+rusqlite = { version = "0.41.1", default-features = false, features = ["bundled", "functions"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 tempfile = "3.27.0"
