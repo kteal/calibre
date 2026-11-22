@@ -1,7 +1,7 @@
 # Repository instructions
 
 - Preserve user work and inspect `git status` before editing.
-- Use stable Rust with edition 2024 and MSRV 1.85.0.
+- Use stable Rust with edition 2024 and MSRV 1.89.0.
 - Forbid unsafe Rust.
 - Keep `rusqlite` types out of the public API.
 - Treat database paths as hostile and keep filesystem work inside the canonical

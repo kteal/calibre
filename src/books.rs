@@ -552,14 +552,15 @@ impl Books {
                     break;
                 }
             }
-            if rollback_error.is_none() && moved_directory {
-                if let Err(source) = fs::rename(&new_directory, &old_directory) {
-                    rollback_error = Some(crate::error::io_error(
-                        "restore moved book directory",
-                        &new_directory,
-                        source,
-                    ));
-                }
+            if rollback_error.is_none()
+                && moved_directory
+                && let Err(source) = fs::rename(&new_directory, &old_directory)
+            {
+                rollback_error = Some(crate::error::io_error(
+                    "restore moved book directory",
+                    &new_directory,
+                    source,
+                ));
             }
             if let Some(rollback_error) = rollback_error {
                 return Err(rollback_error);
@@ -711,9 +712,11 @@ fn parse_date_component(bytes: &[u8], start: usize, end: usize) -> Result<u32> {
 }
 
 const fn days_in_month(year: u32, month: u32) -> u32 {
+    let leap_year =
+        year.is_multiple_of(400) || (year.is_multiple_of(4) && !year.is_multiple_of(100));
     match month {
         4 | 6 | 9 | 11 => 30,
-        2 if year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
+        2 if leap_year => 29,
         2 => 28,
         _ => 31,
     }
