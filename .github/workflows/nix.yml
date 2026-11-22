@@ -17,6 +17,15 @@ jobs:
           persist-credentials: false
       # cachix/install-nix-action v31.11.0
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342
+      - name: Resolve the Rust overlay lock
+        run: |
+          nix flake lock
+          cat flake.lock
+      - name: Verify dependency toolchain
+        run: |
+          version="$(nix develop --no-update-lock-file --command cargo --version)"
+          echo "$version"
+          [[ "$version" == "cargo 1.100.0 "* ]]
       - name: Build package artifact
         run: nix build --print-build-logs
       - name: Check flake
