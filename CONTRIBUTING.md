@@ -8,9 +8,10 @@ Keep production code independent from Calibre and Citadel source. You may use
 Calibre as a black-box oracle in a temporary library. Record new research in
 `docs/provenance.md`.
 
-Use Cargo 1.100 or newer when adding or updating dependencies, including when
-working in a Nix shell. The repository sets a seven-day minimum publish age
-for registry dependencies. Cargo keeps versions already in `Cargo.lock`.
+Use Cargo 1.100 or newer when adding or updating dependencies. `nix develop`
+provides Rust and Cargo 1.100.0. The repository sets a seven-day minimum
+publish age for registry dependencies. Cargo keeps versions already in
+`Cargo.lock`.
 Continue testing the resulting lockfile with Rust 1.89.0.
 
 Run:

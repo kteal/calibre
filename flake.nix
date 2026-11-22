@@ -1,10 +1,20 @@
 {
   description = "Native Rust access to existing Calibre libraries";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay/5aa410a1df0e4e9c25f3818320651c2bddf66aff";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+    }:
     let
       systems = [
         "x86_64-linux"
@@ -79,19 +89,25 @@
       devShells = forAllSystems (
         system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ rust-overlay.overlays.default ];
+          };
+          rustToolchain = pkgs.rust-bin.stable."1.100.0".minimal.override {
+            extensions = [
+              "clippy"
+              "rustfmt"
+            ];
+          };
         in
         {
           default = pkgs.mkShell {
             packages = with pkgs; [
-              cargo
+              rustToolchain
               cargo-deny
-              clippy
               nixfmt
               pkg-config
               rust-analyzer
-              rustc
-              rustfmt
               sqlite
               taplo
             ];
