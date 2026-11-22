@@ -59,7 +59,7 @@ pub struct AuditReport {
 impl AuditReport {
     /// Returns true when no issue was found.
     #[must_use]
-    pub fn is_clean(&self) -> bool {
+    pub const fn is_clean(&self) -> bool {
         self.issues.is_empty()
     }
 }

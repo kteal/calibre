@@ -889,35 +889,35 @@ fn roll_asset_forward(
     after_file: bool,
 ) -> Result<()> {
     if after_file {
-        if let Some(staged) = staged {
-            if path_exists(staged)? {
-                ensure_file(staged, "recover staged asset")?;
-                let destination_exists = path_exists(destination)?;
-                let backup_exists = path_exists(backup)?;
-                match (destination_exists, backup_exists, before_file) {
-                    (true, false, true) => {
-                        ensure_file(destination, "recover asset destination")?;
-                        fs::rename(destination, backup).map_err(|source| {
-                            crate::error::io_error(
-                                "stage asset during recovery",
-                                destination,
-                                source,
-                            )
-                        })?;
-                    }
-                    (false, true, true) | (false, false, false) => {}
-                    _ => {
-                        return Err(ambiguous_paths_error(
-                            "roll asset forward",
+        if let Some(staged) = staged
+            && path_exists(staged)?
+        {
+            ensure_file(staged, "recover staged asset")?;
+            let destination_exists = path_exists(destination)?;
+            let backup_exists = path_exists(backup)?;
+            match (destination_exists, backup_exists, before_file) {
+                (true, false, true) => {
+                    ensure_file(destination, "recover asset destination")?;
+                    fs::rename(destination, backup).map_err(|source| {
+                        crate::error::io_error(
+                            "stage asset during recovery",
                             destination,
-                            backup,
-                        ));
-                    }
+                            source,
+                        )
+                    })?;
                 }
-                fs::rename(staged, destination).map_err(|source| {
-                    crate::error::io_error("install recovered asset", staged, source)
-                })?;
+                (false, true, true) | (false, false, false) => {}
+                _ => {
+                    return Err(ambiguous_paths_error(
+                        "roll asset forward",
+                        destination,
+                        backup,
+                    ));
+                }
             }
+            fs::rename(staged, destination).map_err(|source| {
+                crate::error::io_error("install recovered asset", staged, source)
+            })?;
         }
         ensure_file(destination, "finish recovered asset")?;
     } else {
@@ -1526,13 +1526,12 @@ fn validate_asset_record(root: &Path, journal: &Path, asset: &AssetRecord) -> Re
             });
         }
     }
-    if asset.phase == AssetPhase::Ready {
-        if let AssetDatabaseRecord::Format {
+    if asset.phase == AssetPhase::Ready
+        && let AssetDatabaseRecord::Format {
             after: Some(after), ..
         } = &asset.database
-        {
-            after.to_complete(journal)?;
-        }
+    {
+        after.to_complete(journal)?;
     }
     Ok(())
 }
@@ -1709,16 +1708,17 @@ fn encode_path(path: &Path) -> String {
 }
 
 fn decode_path(value: &str, journal: &Path) -> Result<PathBuf> {
-    if value.len() % 2 != 0 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    let (pairs, remainder) = value.as_bytes().as_chunks::<2>();
+    if !remainder.is_empty() || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(Error::InvalidLibrary {
             path: journal.to_path_buf(),
             reason: "invalid recovery path encoding".into(),
         });
     }
     let mut bytes = Vec::with_capacity(value.len() / 2);
-    for pair in value.as_bytes().chunks_exact(2) {
-        let high = hex_nibble(pair[0]).ok_or_else(|| invalid_path_encoding(journal))?;
-        let low = hex_nibble(pair[1]).ok_or_else(|| invalid_path_encoding(journal))?;
+    for &[first, second] in pairs {
+        let high = hex_nibble(first).ok_or_else(|| invalid_path_encoding(journal))?;
+        let low = hex_nibble(second).ok_or_else(|| invalid_path_encoding(journal))?;
         bytes.push((high << 4) | low);
     }
     #[cfg(unix)]
@@ -1731,16 +1731,14 @@ fn decode_path(value: &str, journal: &Path) -> Result<PathBuf> {
     let path = {
         use std::ffi::OsString;
         use std::os::windows::ffi::OsStringExt;
-        if bytes.len() % 2 != 0 {
+        let (pairs, remainder) = bytes.as_chunks::<2>();
+        if !remainder.is_empty() {
             return Err(Error::InvalidLibrary {
                 path: journal.to_path_buf(),
                 reason: "invalid Windows recovery path encoding".into(),
             });
         }
-        let wide = bytes
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect::<Vec<_>>();
+        let wide = pairs.iter().copied().map(u16::from_le_bytes).collect::<Vec<_>>();
         PathBuf::from(OsString::from_wide(&wide))
     };
     #[cfg(not(any(unix, windows)))]
@@ -1823,10 +1821,10 @@ fn create_parent(path: &Path, operation: &'static str) -> Result<()> {
 }
 
 fn remove_empty_parent(path: &Path, root: &Path) {
-    if let Some(parent) = path.parent() {
-        if parent != root {
-            let _ = fs::remove_dir(parent);
-        }
+    if let Some(parent) = path.parent()
+        && parent != root
+    {
+        let _ = fs::remove_dir(parent);
     }
 }
 
@@ -1863,10 +1861,10 @@ fn remove_journal(path: &Path) -> Result<()> {
         .map_err(|source| crate::error::io_error("remove recovery journal", path, source))?;
     if let Some(parent) = path.parent() {
         sync_directory(parent)?;
-        if fs::remove_dir(parent).is_ok() {
-            if let Some(metadata_directory) = parent.parent() {
-                let _ = fs::remove_dir(metadata_directory);
-            }
+        if fs::remove_dir(parent).is_ok()
+            && let Some(metadata_directory) = parent.parent()
+        {
+            let _ = fs::remove_dir(metadata_directory);
         }
     }
     Ok(())
