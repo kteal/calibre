@@ -9,7 +9,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use uuid::Uuid;
 
-pub(crate) const SUPPORTED_SCHEMA_VERSION: u32 = 27;
+/// Schema versions the crate opens. Calibre 9.11 writes 27; Calibre 9.19 migrates a library to 28 the first time it opens
+/// it, and 28 differs from 27 by one added table (`book_storage`, the viewers' per-book storage). The crate never migrates.
+pub(crate) const SUPPORTED_SCHEMA_VERSIONS: [u32; 2] = [27, 28];
+/// Schema version of a natively created library: the newest one observed.
+pub(crate) const CREATED_SCHEMA_VERSION: u32 = 28;
+/// First schema version that has the `book_storage` table.
+pub(crate) const BOOK_STORAGE_SINCE: u32 = 28;
 pub(crate) const CALIBRE_APPLICATION_ID: u32 = 0x6361_6c69;
 
 /// Access mode for an opened library.
@@ -118,7 +124,7 @@ pub struct Library {
 }
 
 impl Library {
-    /// Creates and opens a new schema-27 Calibre library.
+    /// Creates and opens a new schema-28 Calibre library.
     ///
     /// The target may be missing or an existing empty directory on a
     /// filesystem that supports hard links. Creation refuses every non-empty
@@ -186,14 +192,14 @@ impl Library {
                 ),
             });
         }
-        if schema_version != SUPPORTED_SCHEMA_VERSION {
+        if !SUPPORTED_SCHEMA_VERSIONS.contains(&schema_version) {
             return Err(Error::UnsupportedSchema {
                 operation: "open library",
                 detected: schema_version,
-                supported: "exactly version 27",
+                supported: "versions 27 and 28",
             });
         }
-        validate_schema(&connection, &database)?;
+        validate_schema(&connection, &database, schema_version)?;
 
         let custom_columns = has_active_custom_columns(&connection, &database)?;
         let fts_state = root.join("full-text-search.db").exists();
@@ -210,7 +216,7 @@ impl Library {
                 compatibility: Compatibility {
                     schema_version,
                     application_id,
-                    supported_schema_versions: "27",
+                    supported_schema_versions: "27, 28",
                 },
                 capabilities: Capabilities {
                     read_books: true,
@@ -385,11 +391,11 @@ impl LibraryInner {
                 reason: "library was opened read-only".into(),
             });
         }
-        if self.compatibility.schema_version != SUPPORTED_SCHEMA_VERSION {
+        if !SUPPORTED_SCHEMA_VERSIONS.contains(&self.compatibility.schema_version) {
             return Err(Error::UnsupportedSchema {
                 operation,
                 detected: self.compatibility.schema_version,
-                supported: "version 27",
+                supported: "versions 27 and 28",
             });
         }
         open_connection(&self.database, OpenMode::ReadWrite, self.busy_timeout)
@@ -451,7 +457,11 @@ fn pragma_u32(connection: &Connection, name: &'static str, path: &Path) -> Resul
         .map_err(|error| database_error("read schema identity", path, error))
 }
 
-pub(crate) fn validate_schema(connection: &Connection, path: &Path) -> Result<()> {
+pub(crate) fn validate_schema(
+    connection: &Connection,
+    path: &Path,
+    schema_version: u32,
+) -> Result<()> {
     const REQUIRED: &[(&str, &[&str])] = &[
         (
             "books",
@@ -493,7 +503,24 @@ pub(crate) fn validate_schema(connection: &Connection, path: &Path) -> Result<()
         ("metadata_dirtied", &["book"]),
         ("books_pages_link", &["book", "needs_scan"]),
     ];
-    for (table, columns) in REQUIRED {
+    let storage: &[(&str, &[&str])] = &[(
+        "book_storage",
+        &[
+            "id",
+            "book",
+            "format",
+            "user_type",
+            "user",
+            "timestamp",
+            "data",
+        ],
+    )];
+    let required = REQUIRED.iter().chain(
+        storage
+            .iter()
+            .filter(|_| schema_version >= BOOK_STORAGE_SINCE),
+    );
+    for (table, columns) in required {
         let mut statement = connection
             .prepare(&format!("PRAGMA table_info({table})"))
             .map_err(|error| database_error("inspect schema", path, error))?;
@@ -591,13 +618,13 @@ fn creation_parent(path: &Path) -> &Path {
 fn validate_created_database(connection: &Connection, database: &Path) -> Result<()> {
     let schema_version = pragma_u32(connection, "user_version", database)?;
     let application_id = pragma_u32(connection, "application_id", database)?;
-    if schema_version != SUPPORTED_SCHEMA_VERSION || application_id != CALIBRE_APPLICATION_ID {
+    if schema_version != CREATED_SCHEMA_VERSION || application_id != CALIBRE_APPLICATION_ID {
         return Err(Error::InvalidLibrary {
             path: database.to_path_buf(),
             reason: "new database has an unexpected schema identity".into(),
         });
     }
-    validate_schema(connection, database)?;
+    validate_schema(connection, database, schema_version)?;
     let books: i64 = connection
         .query_row("SELECT count(*) FROM books", [], |row| row.get(0))
         .map_err(|error| database_error("validate empty catalog", database, error))?;

@@ -8,7 +8,13 @@ pub struct TestLibrary {
 }
 
 impl TestLibrary {
+    /// A library at the newest schema the crate creates (28).
     pub fn new() -> Self {
+        Self::with_version(28)
+    }
+
+    /// A library as Calibre 9.11 left it (schema 27, no `book_storage`).
+    pub fn schema_27() -> Self {
         Self::with_version(27)
     }
 
@@ -160,4 +166,20 @@ fn create_schema(root: &Path, version: u32) {
             "
         ))
         .expect("create independently authored minimal test schema");
+    if version >= 28 {
+        connection
+            .execute_batch(
+                "CREATE TABLE book_storage (
+                    id INTEGER PRIMARY KEY,
+                    book INTEGER NOT NULL,
+                    format TEXT NOT NULL COLLATE NOCASE,
+                    user_type TEXT NOT NULL,
+                    user TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    data TEXT NOT NULL DEFAULT '{}',
+                    UNIQUE (book, format, user_type, user)
+                );",
+            )
+            .expect("create book_storage for schema 28");
+    }
 }

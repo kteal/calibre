@@ -16,7 +16,7 @@
 //! # }
 //! ```
 //!
-//! A new core schema-27 library can be created without Calibre or Python:
+//! A new core schema-28 library can be created without Calibre or Python:
 //!
 //! ```no_run
 //! use calibre::{Library, NewBook};

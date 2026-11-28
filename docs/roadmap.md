@@ -1,6 +1,6 @@
 # Roadmap
 
-## 0.1: core schema-27 slice
+## 0.1: core schema-27 and schema-28 slice
 
 Acceptance:
 
@@ -18,7 +18,7 @@ Acceptance:
 
 - validate and write publication dates while adding, updating, clearing,
   trashing, restoring, and reopening books;
-- create a fresh schema-27 library without a runtime executable;
+- create a fresh schema-28 library without a runtime executable;
 - refuse existing contents and clean up staged state on failures;
 - pass the core lifecycle, audit, Calibre check, and bidirectional Calibre
   mutation tests.
@@ -47,8 +47,8 @@ Acceptance:
 
 Status: implemented for core metadata. Format removal defaults to Calibre
 trash, with explicit permanent removal available. Whole-book operations refuse
-custom columns, FTS, annotations, plugin data, conversion options, and
-last-read state when the crate cannot preserve them.
+custom columns, FTS, annotations, plugin data, conversion options,
+last-read state, and viewer storage when the crate cannot preserve them.
 
 ## Next 0.1 batch: preferences and library state
 

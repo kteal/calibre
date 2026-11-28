@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::library::{CALIBRE_APPLICATION_ID, SUPPORTED_SCHEMA_VERSION, database_error};
+use crate::library::{CALIBRE_APPLICATION_ID, CREATED_SCHEMA_VERSION, database_error};
 use rusqlite::{Connection, params};
 use std::path::Path;
 
@@ -8,14 +8,14 @@ pub(crate) fn initialize(connection: &mut Connection, database: &Path) -> Result
         .pragma_update(None, "application_id", CALIBRE_APPLICATION_ID)
         .map_err(|error| database_error("set Calibre application ID", database, error))?;
     connection
-        .pragma_update(None, "user_version", SUPPORTED_SCHEMA_VERSION)
+        .pragma_update(None, "user_version", CREATED_SCHEMA_VERSION)
         .map_err(|error| database_error("set Calibre schema version", database, error))?;
     let transaction = connection
         .transaction()
         .map_err(|error| database_error("begin library initialization", database, error))?;
     transaction
         .execute_batch(SCHEMA)
-        .map_err(|error| database_error("create schema-27 library", database, error))?;
+        .map_err(|error| database_error("create schema-28 library", database, error))?;
     transaction
         .execute(
             "INSERT INTO library_id(uuid) VALUES (?1)",
@@ -162,6 +162,19 @@ CREATE TABLE books_pages_link (
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     needs_scan INTEGER NOT NULL DEFAULT 0
 );
+-- Per-book storage of the viewers (schema 28). Shape taken from PRAGMA introspection of a disposable Calibre 9.19 library:
+-- column types and NOT NULL flags, the '{}' default, a rowid primary key without AUTOINCREMENT, one unique key over
+-- (book, format NOCASE, user_type, user) and a cascading foreign key to books.
+CREATE TABLE book_storage (
+    id INTEGER PRIMARY KEY,
+    book INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    format TEXT NOT NULL COLLATE NOCASE,
+    user_type TEXT NOT NULL,
+    user TEXT NOT NULL,
+    timestamp REAL NOT NULL,
+    data TEXT NOT NULL DEFAULT '{}',
+    UNIQUE (book, format, user_type, user)
+);
 CREATE TABLE custom_columns (
     id INTEGER PRIMARY KEY,
     label TEXT NOT NULL UNIQUE,
@@ -299,5 +312,6 @@ BEGIN
     DELETE FROM books_plugin_data WHERE book = OLD.id;
     DELETE FROM last_read_positions WHERE book = OLD.id;
     DELETE FROM annotations WHERE book = OLD.id;
+    DELETE FROM book_storage WHERE book = OLD.id;
 END;
 ";

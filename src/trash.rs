@@ -829,6 +829,7 @@ pub(crate) fn ensure_no_deferred_book_state(
 ) -> Result<()> {
     for table in [
         "annotations",
+        "book_storage",
         "books_plugin_data",
         "conversion_options",
         "last_read_positions",

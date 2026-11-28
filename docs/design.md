@@ -36,7 +36,8 @@ Source format and cover files are copied; the caller's files are never moved.
 
 The first release identifies the schema through `PRAGMA user_version` and
 `PRAGMA application_id`, then validates the required tables and columns. Schema
-version 27 is the only version accepted in either mode. The crate never changes
+versions 27 and 28 are the only versions accepted, in either mode. Version 28
+adds the `book_storage` table, which is required from 28 on. The crate never changes
 `user_version` and never runs Calibre migrations.
 
 Write support is capability-based as well as version-based. An operation whose
@@ -128,14 +129,14 @@ write path before removing the trash copy.
 
 Whole-book removal is enabled only when active custom columns and FTS are
 absent. It also checks the selected book for annotations, plugin data,
-conversion options, and last-read positions. A matching row makes the
+conversion options, last-read positions, and viewer storage (schema 28). A matching row makes the
 operation unsupported instead of discarding deferred state.
 
 Trash listing never creates directories in read-only mode. Explicit deletion
 and expiry operate only on numeric entry directories and reject symlinks.
 Expiry compares the directory modification time with a caller-supplied age.
 
-## ADR-0005: native schema-27 library creation
+## ADR-0005: native schema-28 library creation
 
 Status: accepted for pre-release 0.1.0.
 
@@ -156,7 +157,7 @@ This keeps all database and cleanup work inside the validated target root and
 prevents a partial database from looking like a library.
 
 The initializer contains the tables, indexes, and bookkeeping triggers needed
-by the crate's supported operations and the tested Calibre 9.10/9.11 core CLI
+by the crate's supported operations and the tested Calibre 9.11/9.19 core CLI
 surface. It does not claim compatibility for unsupported legacy views,
 annotation FTS, custom-column writes, or Calibre preferences beyond the
 observed empty-library seed values.
