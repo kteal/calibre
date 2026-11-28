@@ -4,7 +4,7 @@
 
 The pre-release 0.1.0 code opens libraries with:
 
-- `PRAGMA user_version = 27`;
+- `PRAGMA user_version` 27 or 28;
 - `PRAGMA application_id = 0x63616c69`;
 - all required core tables and columns.
 
@@ -13,7 +13,8 @@ databases in both modes. Future releases may add read-only support for other
 versions after fixtures prove each schema shape.
 
 Calibre 9.10.0 and 9.11.0 on Linux passed both creation directions on
-2026-07-19: Calibre-created libraries survived Rust reads and writes, and
+2026-07-19 (schema 27), and Calibre 9.11.0 and 9.19.0 passed them again on
+2026-11-28 (schema 28): Calibre-created libraries survived Rust reads and writes, and
 Rust-created libraries passed `calibredb check_library`, Calibre writes, and a
 Rust reopen. Both versions read Rust-written publication dates, Rust read
 Calibre-written dates, both restored Rust-created book and format trash, and
@@ -23,7 +24,7 @@ Rust restored book-trash entries created by each Calibre version.
 
 | Area | Status | Constraint |
 |---|---|---|
-| Open | Supported | Schema-27 libraries |
+| Open | Supported | Schema-27 and schema-28 libraries |
 | Create | Supported | Missing target with an existing parent, or an empty target; hard-link support required |
 | Read core metadata | Supported | Required schema signature must match |
 | Query and pagination | Supported | Composable AND filters, multi-sort, stable ID tie break |
@@ -47,7 +48,7 @@ SQLite quick-check failures without changing the library.
 
 ## Known gaps
 
-Native creation writes the application ID, schema version 27, required
+Native creation writes the application ID, schema version 28, required
 core/deferred-state tables, indexes, independent bookkeeping triggers, a fresh
 library UUID, and Calibre's observed initial preference rows. It never
 overwrites a non-empty target. The database is staged, validated, synced, and
@@ -59,7 +60,7 @@ without hard-link support.
 
 The creation schema is deliberately limited to the crate's supported core
 surface. It does not create Calibre's legacy convenience views or annotation
-FTS virtual tables and triggers. Calibre 9.10.0 and 9.11.0 core CLI operations,
+FTS virtual tables and triggers. Calibre 9.11.0 and 9.19.0 core CLI operations,
 including `check_library`, metadata mutation, trash interoperation, and reopen,
 passed against this shape. Annotation search, custom-column creation, and FTS
 maintenance are not covered by the creation guarantee.
@@ -92,7 +93,7 @@ UUID, timestamp, formats, cover, and core relationships. It sets
 `last_modified` to restoration time, as Calibre does.
 
 Whole-book removal refuses a book with annotations, plugin data, conversion
-options, or last-read positions. Restoration refuses custom-column and
+options, last-read positions, or viewer storage (`book_storage`, schema 28). Restoration refuses custom-column and
 annotation payloads in OPF. Format trash remains safe for core libraries but is
 currently gated by the same conservative `calibre_trash` capability. Trash
 expiry uses the entry-directory mtime and a caller-selected age. The crate

@@ -17,13 +17,16 @@ project or its maintainers.
 
 ## Status
 
-The pre-release 0.1.0 code supports Calibre schema version 27. The
-compatibility test has passed against Calibre 9.10.0 and 9.11.0 on Linux.
+The pre-release 0.1.0 code supports Calibre schema versions 27 and 28. Version
+27 is what Calibre 9.11 writes; Calibre 9.19 migrates a library to 28 the first
+time it opens it, adding one table (`book_storage`). New libraries are created
+at 28. The compatibility test has passed against Calibre 9.11.0 and 9.19.0 on
+Linux.
 
 The first milestone provides:
 
 - read-only and read-write opening with schema and application-ID validation;
-- native creation of empty schema-27 libraries;
+- native creation of empty schema-28 libraries;
 - capability reporting;
 - composable book filters, multi-column sorting, pagination, and full core
   metadata loading;
@@ -43,8 +46,8 @@ The first milestone provides:
 Locale-aware sort generation, exact filename parity, custom-column writes,
 preferences, notes, annotations, annotation search, and FTS maintenance remain
 unsupported.
-Whole-book trash refuses books with annotation, plugin, conversion-option, or
-last-read state because core OPF restoration cannot preserve it. Composite
+Whole-book trash refuses books with annotation, plugin, conversion-option,
+last-read, or viewer-storage (`book_storage`) state because core OPF restoration cannot preserve it. Composite
 custom-column values require Calibre's template engine and return
 `CustomColumnValue::Unavailable`. The crate refuses operations whose deferred
 state it cannot update. Read
@@ -84,8 +87,8 @@ empty directory on a filesystem with hard-link support. It refuses all existing
 contents, including `metadata.db`. Creation stages and validates the database
 inside the canonical target root before publishing it without replacement and
 returns a read-write handle. The generated core schema has passed
-`calibredb check_library` and bidirectional mutation tests with Calibre 9.10.0
-and 9.11.0. It intentionally omits unsupported legacy database views and
+`calibredb check_library` and bidirectional mutation tests with Calibre 9.11.0
+and 9.19.0. It intentionally omits unsupported legacy database views and
 annotation-search virtual tables; use Calibre if those surfaces must exist
 before first open.
 

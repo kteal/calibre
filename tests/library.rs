@@ -197,7 +197,7 @@ fn read_only_open_does_not_create_sqlite_sidecars() {
         .modified()
         .expect("mtime");
     let library = Library::open(fixture.path()).expect("open");
-    assert_eq!(library.compatibility().schema_version, 27);
+    assert_eq!(library.compatibility().schema_version, 28);
     assert!(library.capabilities().read_books);
     assert!(!library.capabilities().write_books);
     assert_eq!(
@@ -229,7 +229,7 @@ fn creates_missing_and_existing_empty_libraries_and_reopens_them() {
         missing.canonicalize().expect("canonical root")
     );
     assert_eq!(library.mode(), calibre::OpenMode::ReadWrite);
-    assert_eq!(library.compatibility().schema_version, 27);
+    assert_eq!(library.compatibility().schema_version, 28);
     assert_eq!(library.compatibility().application_id, 0x6361_6c69);
     assert!(library.capabilities().write_books);
     assert!(library.capabilities().write_formats);
@@ -1892,4 +1892,88 @@ fn rejects_symlink_escape_from_database_path() {
         library.books().get(calibre::BookId::new(1)),
         Err(Error::PathEscape { .. })
     ));
+}
+
+#[test]
+fn schema_27_libraries_still_open_and_work() {
+    let fixture = support::TestLibrary::schema_27();
+    let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+        .expect("a Calibre 9.11 library opens");
+    assert_eq!(library.compatibility().schema_version, 27);
+    assert_eq!(library.compatibility().supported_schema_versions, "27, 28");
+    let book = library
+        .books()
+        .add(NewBook {
+            title: "Old schema".into(),
+            authors: vec!["Tester".into()],
+            ..NewBook::default()
+        })
+        .expect("add on schema 27");
+    library
+        .books()
+        .remove(book.id, DeletionMode::Permanent)
+        .expect("permanent delete on schema 27 has no book_storage to touch");
+}
+
+#[test]
+fn schema_28_without_book_storage_is_not_a_calibre_library() {
+    let fixture = support::TestLibrary::new();
+    let connection = rusqlite::Connection::open(fixture.database()).expect("open database");
+    connection
+        .execute_batch("DROP TABLE book_storage")
+        .expect("remove the table schema 28 requires");
+    drop(connection);
+    let error = Library::open(fixture.path()).expect_err("incomplete schema 28");
+    assert!(
+        matches!(&error, Error::InvalidLibrary { reason, .. } if reason.contains("book_storage")),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn versions_outside_the_observed_range_are_rejected() {
+    // Version 26 and 29 are outside the observed range and must stay rejected.
+    for version in [26, 29] {
+        let fixture = support::TestLibrary::with_version(version);
+        let error = Library::open(fixture.path()).expect_err("unsupported version");
+        assert!(
+            matches!(error, Error::UnsupportedSchema { detected, .. } if detected == version),
+            "version {version}"
+        );
+    }
+}
+
+#[test]
+fn book_storage_state_blocks_trash_and_permanent_delete() {
+    let fixture = support::TestLibrary::new();
+    let library = Library::open_with(fixture.path(), OpenOptions::new().read_write(true))
+        .expect("open writable");
+    let book = library
+        .books()
+        .add(NewBook {
+            title: "Viewer state".into(),
+            authors: vec!["Tester".into()],
+            ..NewBook::default()
+        })
+        .expect("add");
+    let connection = rusqlite::Connection::open(fixture.database()).expect("open database");
+    connection
+        .execute(
+            "INSERT INTO book_storage(book, format, user_type, user, timestamp, data) \
+             VALUES (?1, 'EPUB', 'local', 'viewer', 1.5, '{\"k\":1}')",
+            [book.id.get()],
+        )
+        .expect("add viewer storage");
+    drop(connection);
+
+    for mode in [DeletionMode::Trash, DeletionMode::Permanent] {
+        assert!(
+            matches!(
+                library.books().remove(book.id, mode),
+                Err(Error::UnsupportedOperation { .. })
+            ),
+            "{mode:?} must refuse a book with viewer storage"
+        );
+    }
+    assert!(library.books().get(book.id).is_ok());
 }

@@ -17,7 +17,7 @@ cargo doc --all-features --no-deps
 
 Unit tests cover path validation, sanitization properties, and injected native
 creation failures before and after the schema transaction. Integration tests
-build a fresh schema-27 library for each case. They cover native creation from
+build a fresh schema-28 library for each case (schema 27 has its own fixture). They cover native creation from
 missing and empty directories, refusal of existing contents, reopen, the full
 created-library lifecycle, open modes, schema rejection, publication-date
 validation and round trips, full metadata, rich queries, concurrent reads, streaming assets,

@@ -4,8 +4,11 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
-- Open and validate schema-27 Calibre libraries in read-only or read-write mode.
-- Create new core schema-27 libraries natively in missing or empty directories
+- Open and validate schema-27 and schema-28 Calibre libraries in read-only or
+  read-write mode. Schema 28 adds the `book_storage` table; a book that has
+  viewer storage is refused for trash and permanent deletion like the other
+  deferred state.
+- Create new core schema-28 libraries natively in missing or empty directories
   with staged failure cleanup and no executable dependency.
 - Report schema compatibility and operation capabilities.
 - Query and load books with core relationships, formats, sizes, and cover paths.

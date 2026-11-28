@@ -93,6 +93,49 @@ The Calibre 9.11.0 x86_64 Linux archive used for the final creation oracle was
 downloaded from the official release host. Its SHA-512 digest matched the
 value published at `calibre-ebook.com/signatures` before extraction.
 
+Schema-28 research on 2026-11-28 used:
+
+- Calibre database API manual, version 9.19.0 (page last updated 21 Nov 2026):
+  <https://manual.calibre-ebook.com/db_api.html>
+- Calibre's published release notes for 9.17 to 9.19:
+  <https://calibre-ebook.com/whats-new>
+- the official x86_64 Linux archives for 9.11.0 and 9.19.0 from
+  `download.calibre-ebook.com`. Each archive's SHA-512 digest matched the value
+  published at `calibre-ebook.com/signatures` before extraction.
+
+The manual lists `book_storage_for_book` and `update_book_storage_for_book`
+(per-book storage used for `localStorage` in the viewers, keyed by book, format,
+user type and user). It states no schema number and names no table. The schema
+shape below comes from black-box introspection only; neither Calibre source nor
+schema SQL was read.
+
+Disposable empty libraries made by `calibredb add --empty` with 9.11.0 and 9.19.0
+reported `PRAGMA user_version` 27 and 28. Comparing `sqlite_master` object names,
+`PRAGMA table_info`, `PRAGMA index_list` and `PRAGMA index_xinfo` showed one
+difference: 9.19.0 has the extra table `book_storage` (`id`, `book`, `format`,
+`user_type`, `user`, `timestamp`, `data`, with `data` defaulting to `'{}'`) and its
+automatic unique index over `(book, format NOCASE, user_type, user)`.
+`PRAGMA foreign_key_list` shows a cascading reference to `books(id)`. The table,
+column, index and trigger lists and every other table's columns were identical
+between the two versions.
+
+Black-box runs established the behavior the crate depends on:
+
+- Calibre 9.19.0 opening a schema-27 library set `user_version` to 28 and created
+  `book_storage` (a migration the crate does not reproduce and never runs).
+- Calibre 9.11.0 opened and listed a schema-28 library and `check_library`
+  succeeded on it, so the two schemas coexist for the core operations tested.
+- `calibredb remove` (trash) and `calibredb remove --permanent` both deleted the
+  `book_storage` rows of the removed book, and `calibredb trash restore` did not
+  bring them back. The crate therefore refuses to trash or delete a book that has
+  `book_storage` rows rather than discard them silently, like the other deferred
+  state.
+
+Not examined: the contents of `book_storage.data`, how the viewers write it, any
+Calibre trigger or view definition, and migrations from any version below 27. The
+`book_storage` DDL, the validator rule and the delete-trigger line in this crate
+are independent work based on the observations above.
+
 ## Citadel research
 
 Citadel and its internal `libcalibre` crate informed test coverage and risk
